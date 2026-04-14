@@ -1,1 +1,1 @@
-/usr/bin/c++ -L/usr/lib/x86_64-linux-gnu -lfuse3 -lpthread -lsqlite3 CMakeFiles/janus.dir/src/main.cpp.o CMakeFiles/janus.dir/src/JanusFS.cpp.o CMakeFiles/janus.dir/src/Database.cpp.o -o janus  -lfuse3 -lpthread -lsqlite3 
+/usr/bin/c++ -L/usr/lib/x86_64-linux-gnu -lfuse3 -lpthread -lsqlite3 -lcrypto CMakeFiles/janus.dir/src/main.cpp.o CMakeFiles/janus.dir/src/JanusFS.cpp.o CMakeFiles/janus.dir/src/Database.cpp.o CMakeFiles/janus.dir/src/BlockStore.cpp.o -o janus  -lfuse3 -lpthread -lsqlite3 -lcrypto 

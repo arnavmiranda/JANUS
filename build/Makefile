@@ -129,6 +129,30 @@ janus/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/janus.dir/build.make CMakeFiles/janus.dir/build
 .PHONY : janus/fast
 
+src/BlockStore.o: src/BlockStore.cpp.o
+.PHONY : src/BlockStore.o
+
+# target to build an object file
+src/BlockStore.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/janus.dir/build.make CMakeFiles/janus.dir/src/BlockStore.cpp.o
+.PHONY : src/BlockStore.cpp.o
+
+src/BlockStore.i: src/BlockStore.cpp.i
+.PHONY : src/BlockStore.i
+
+# target to preprocess a source file
+src/BlockStore.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/janus.dir/build.make CMakeFiles/janus.dir/src/BlockStore.cpp.i
+.PHONY : src/BlockStore.cpp.i
+
+src/BlockStore.s: src/BlockStore.cpp.s
+.PHONY : src/BlockStore.s
+
+# target to generate assembly for a file
+src/BlockStore.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/janus.dir/build.make CMakeFiles/janus.dir/src/BlockStore.cpp.s
+.PHONY : src/BlockStore.cpp.s
+
 src/Database.o: src/Database.cpp.o
 .PHONY : src/Database.o
 
@@ -210,6 +234,9 @@ help:
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
 	@echo "... janus"
+	@echo "... src/BlockStore.o"
+	@echo "... src/BlockStore.i"
+	@echo "... src/BlockStore.s"
 	@echo "... src/Database.o"
 	@echo "... src/Database.i"
 	@echo "... src/Database.s"
