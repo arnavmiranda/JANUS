@@ -129,6 +129,30 @@ janus/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/janus.dir/build.make CMakeFiles/janus.dir/build
 .PHONY : janus/fast
 
+src/Database.o: src/Database.cpp.o
+.PHONY : src/Database.o
+
+# target to build an object file
+src/Database.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/janus.dir/build.make CMakeFiles/janus.dir/src/Database.cpp.o
+.PHONY : src/Database.cpp.o
+
+src/Database.i: src/Database.cpp.i
+.PHONY : src/Database.i
+
+# target to preprocess a source file
+src/Database.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/janus.dir/build.make CMakeFiles/janus.dir/src/Database.cpp.i
+.PHONY : src/Database.cpp.i
+
+src/Database.s: src/Database.cpp.s
+.PHONY : src/Database.s
+
+# target to generate assembly for a file
+src/Database.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/janus.dir/build.make CMakeFiles/janus.dir/src/Database.cpp.s
+.PHONY : src/Database.cpp.s
+
 src/JanusFS.o: src/JanusFS.cpp.o
 .PHONY : src/JanusFS.o
 
@@ -186,6 +210,9 @@ help:
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
 	@echo "... janus"
+	@echo "... src/Database.o"
+	@echo "... src/Database.i"
+	@echo "... src/Database.s"
 	@echo "... src/JanusFS.o"
 	@echo "... src/JanusFS.i"
 	@echo "... src/JanusFS.s"

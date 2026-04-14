@@ -2,19 +2,29 @@
 #include <fuse.h>
 #include <iostream>
 #include "JanusFS.h"
+#include "Database.h" // Add this include
 
 int main(int argc, char* argv[]) {
-    JanusFS fs;
+    try {
+        Database db("janus_meta.db");
+        std::cout << "[JANUS] SQLite Metadata Engine Initialized." << std::endl;
 
-    struct fuse_operations janus_oper = {};
-    janus_oper.getattr = JanusFS::wrap_getattr;
-    janus_oper.readdir = JanusFS::wrap_readdir;
-    janus_oper.read = JanusFS::wrap_read;
+        JanusFS fs;
 
-    struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
+        struct fuse_operations janus_oper = {};
+        janus_oper.getattr = JanusFS::wrap_getattr;
+        janus_oper.readdir = JanusFS::wrap_readdir;
+        janus_oper.read = JanusFS::wrap_read;
 
-    int ret = fuse_main(args.argc, args.argv, &janus_oper, &fs);
-    
-    fuse_opt_free_args(&args);
-    return ret;
+        struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
+
+        int ret = fuse_main(args.argc, args.argv, &janus_oper, &fs);
+        
+        fuse_opt_free_args(&args);
+        return ret;
+
+    } catch (const std::exception& e) {
+        std::cerr << "[FATAL] Database failed: " << e.what() << std::endl;
+        return 1;
+    }
 }

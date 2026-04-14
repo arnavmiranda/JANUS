@@ -81,12 +81,12 @@ clean: CMakeFiles/janus.dir/clean
 CMakeFiles/janus.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/janus.dir/build.make CMakeFiles/janus.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/janus.dir/build.make CMakeFiles/janus.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/arnavmiranda/projects/janus/build/CMakeFiles --progress-num=1,2,3 "Built target janus"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/arnavmiranda/projects/janus/build/CMakeFiles --progress-num=1,2,3,4 "Built target janus"
 .PHONY : CMakeFiles/janus.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/janus.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/arnavmiranda/projects/janus/build/CMakeFiles 3
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/arnavmiranda/projects/janus/build/CMakeFiles 4
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/janus.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/arnavmiranda/projects/janus/build/CMakeFiles 0
 .PHONY : CMakeFiles/janus.dir/rule

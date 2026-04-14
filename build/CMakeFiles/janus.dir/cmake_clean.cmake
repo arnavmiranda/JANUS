@@ -1,4 +1,6 @@
 file(REMOVE_RECURSE
+  "CMakeFiles/janus.dir/src/Database.cpp.o"
+  "CMakeFiles/janus.dir/src/Database.cpp.o.d"
   "CMakeFiles/janus.dir/src/JanusFS.cpp.o"
   "CMakeFiles/janus.dir/src/JanusFS.cpp.o.d"
   "CMakeFiles/janus.dir/src/main.cpp.o"
