@@ -24,6 +24,8 @@ struct SQLiteStmtDeleter {
 using DatabasePtr = std::unique_ptr<sqlite3, SQLiteDeleter>;
 using StatementPtr = std::unique_ptr<sqlite3_stmt, SQLiteStmtDeleter>;
 
+class BlockStore;
+
 class Database {
 public:
     explicit Database(const std::string& db_path);
@@ -36,6 +38,9 @@ public:
 
     void executeQuery(const std::string& query);
     StatementPtr prepareStatement(const std::string& query);
+
+    std::string commitSnapshot(BlockStore& cas, const std::string& parent_hash = "");
+    std::string getLatestSnapshotHash();
 
 private:
     DatabasePtr db;
