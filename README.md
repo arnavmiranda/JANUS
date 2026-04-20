@@ -1,197 +1,138 @@
-# JANUS: Version-Controlled Content-Addressable Filesystem
+# JANUS: A Version-Controlled Content-Addressable Filesystem in Userspace
 
-![C++](https://img.shields.io/badge/C++-17-blue.svg)
-![FUSE](https://img.shields.io/badge/FUSE-3.14-orange.svg)
-![SQLite](https://img.shields.io/badge/SQLite-WAL_Mode-lightblue.svg)
-![OpenSSL](https://img.shields.io/badge/OpenSSL-SHA256-brightgreen.svg)
-![CMake](https://img.shields.io/badge/Build-CMake-red.svg)
-![Platform](https://img.shields.io/badge/Platform-Linux-yellowgreen.svg)
+## Abstract
+JANUS is a custom user-space filesystem implemented in C++ that converges virtual filesystem (VFS) architecture, relational database theory, and cryptographic deduplication into a cohesive storage engine. By intercepting POSIX system calls via FUSE (Filesystem in Userspace), JANUS abstracts traditional block-device storage, decoupling file metadata from payload data. It introduces intrinsic, block-level data deduplication, ACID-compliant metadata persistence, and deterministic, Merkle-tree-inspired version control directly at the filesystem interface level.
 
-JANUS is a custom user-space filesystem built in C++17 using FUSE (Filesystem in Userspace). It acts as a hybrid between a standard mounted drive and a Git-style version control system: every file operation is intercepted, content is stored in a deduplicated block pool, and the entire filesystem state can be snapshotted and rewound to any point in history with a single command.
+## System Architecture
 
----
+The architecture of JANUS is strictly divided into three primary sub-systems:
 
-## Core Architecture & Features
+### 1. The FUSE Intercept Layer (VFS)
+JANUS utilizes the `libfuse` bridge to intercept kernel-level POSIX operations. Standard system calls—such as `getattr`, `readdir`, `read`, `write`, `create`, and `unlink`—are routed into custom C++ handlers. This allows JANUS to present a standard POSIX-compliant interface to user applications (e.g., `bash`, `cat`, `echo`) while fundamentally altering how data is persisted in the background.
 
-### 1. FUSE Kernel Bridge (`JanusFS`)
-JANUS intercepts native Linux POSIX syscalls — `getattr`, `readdir`, `read`, `write`, `create`, and `unlink` — and routes them through custom C++ handlers in `JanusFS`. Static wrapper functions (`wrap_*`) are registered with `fuse_main` and relay calls into the `JanusFS` instance via the FUSE private-data pointer.
+### 2. Relational Metadata Engine (SQLite)
+Traditional filesystems rely on complex internal structures (such as B-trees and journaling logs) to manage inodes and directory hierarchies. JANUS delegates metadata management to a relational database (SQLite). 
+* **ACID Compliance:** The database operates in Write-Ahead Logging (WAL) mode, guaranteeing atomicity and durability. If a system crash occurs during a filesystem operation, the transaction is safely rolled back, preventing metadata corruption.
+* **Schema:** The database maintains relational mappings between logical filenames, standard POSIX permission modes, byte sizes, and their corresponding cryptographic block pointers.
 
-### 2. Relational Metadata Engine (`Database` / SQLite)
-File metadata — inodes, permissions, sizes, and block mappings — is managed in a SQLite database (`janus_meta.db`). Four tables form the schema:
+### 3. Content-Addressable Storage (CAS)
+File payloads are never stored linearly or redundantly. Upon a `write` operation, the payload is hashed utilizing the OpenSSL SHA-256 algorithm. The resulting 64-character hexadecimal digest becomes the absolute identifier for that data block, which is stored in a centralized `.janus/blocks/` pool. This architectural decision yields implicit, system-wide data deduplication; multiple duplicate files utilize the physical disk footprint of a single payload block.
 
-| Table | Purpose |
-|---|---|
-| `inodes` | One row per file: `filename`, `mode`, `size`, `mtime` |
-| `file_blocks` | Maps `inode_id → block_hash` (one row per block, preserving order via `block_index`) |
-| `blocks` | CAS catalogue: `hash`, `size`, `refcount` |
-| `snapshots` | Immutable snapshot log: `timestamp`, `parent_hash`, `commit_hash` |
+## Version Control Mechanics
 
-The database runs in **WAL (Write-Ahead Logging)** mode with `PRAGMA foreign_keys=ON`, providing corruption resistance during power losses or kernel panics and serializing multi-reader/single-writer concurrent access safely.
+JANUS extends standard storage capabilities by embedding state-tracking directly into the VFS logic.
 
-### 3. Content-Addressable Storage — CAS (`BlockStore` / OpenSSL)
-File payloads are never stored linearly on disk. Every write:
-1. Computes a **SHA-256 digest** of the raw bytes using the OpenSSL `EVP_DigestInit/Update/Final` API (via a RAII `EvpMdCtxPtr` wrapper).
-2. Checks if `.janus/blocks/<hash>` already exists — if so, it returns immediately (**instant deduplication**).
-3. Atomically writes via a randomised `.tmp` file and `std::filesystem::rename` (crash-safe, never leaves partial blocks).
+* **State Serialization (Snapshotting):** Invoking a commit generates a Merkle-tree-inspired text manifest. This manifest captures the absolute state of the filesystem at a given timestamp by mapping current active inodes to their respective CAS block hashes.
+* **Temporal Restoration (Checkout):** To restore a previous state, JANUS executes a destructive teardown of the current metadata tables and reconstructs the SQLite state by deserializing a historical manifest.
+* **State Comparison (Diff Engine):** JANUS can parse and compare multiple manifests in memory to deterministically identify file additions, deletions, and modifications without requiring the filesystem to be mounted.
+* **Dynamic State Preservation (`.janusignore`):** JANUS supports a robust ignore engine. Files matching patterns within a `.janusignore` file are excluded from manifests. During a destructive temporal restoration (`checkout`), JANUS injects these ignored files into active memory, wipes the database, restores the past state, and securely re-injects the ignored files into the new timeline, ensuring local configuration or secrets are not inadvertently destroyed.
 
-100 copies of the same file consume the physical disk space of exactly one file.
+## Advanced Interfaces
 
-### 4. Merkle-Tree Snapshotting (`commit`)
-`commitSnapshot()` generates a lightweight text manifest — one `FILE|<name>|<size>|<mode>|<block_hash>` line per tracked inode — and stores the manifest itself as a CAS block. The SHA-256 hash of that manifest block is the **commit hash**, forming the root of a Merkle tree over the entire filesystem state.
-
-Files listed in `.janusignore` are silently excluded from the manifest at commit time.
-
-### 5. Timeline Reconstruction (`checkout`)
-`checkoutSnapshot()` deserialises a historical manifest and performs an atomic 3-phase database rewrite:
-
-1. **Preserve** — scan current inodes and save any `.janusignore`-matching files to an in-memory `vector<SavedInode>` before touching the database.
-2. **Wipe & Restore** — `DELETE FROM file_blocks / inodes`, then re-insert every row from the target manifest.
-3. **Re-inject preserved files** — re-insert saved ignored inodes using `INSERT OR IGNORE` so the snapshot takes priority on name collision.
-
-The entire operation runs inside a single SQLite transaction; a `catch (...)` block triggers `ROLLBACK` on any failure, guaranteeing crash consistency.
-
-### 6. Timeline Comparison (`diff`)
-`diffSnapshots()` fetches two manifest blobs from the CAS, parses each into an `unordered_map<filename, block_hash>` in memory, and emits a colour-coded diff to stdout — no mounting required:
-
-| Symbol | Colour | Meaning |
-|---|---|---|
-| `[+]` | Green | File added in the newer snapshot |
-| `[~]` | Yellow | File modified (hash changed) |
-| `[-]` | Red | File removed from the newer snapshot |
-
-### 7. The Ignore Engine (`.janusignore`)
-`getIgnoreList()` reads the `.janusignore` inode directly from the live database and its content from the CAS block pool, splitting the contents into a rule list. `isIgnored()` enforces two matching strategies:
-
-- **Exact match** — `secret.key` matches only `secret.key`
-- **Glob suffix** — `*.log` matches any filename ending in `.log`
+* **Interactive Telemetry:** The `janus log` command implements a native C++ terminal user interface (TUI) for navigating chronological filesystem snapshots and executing restorations interactively.
+* **Data APIs:** The `janus stats --json` parameter provides machine-readable telemetry regarding total block counts, inode usage, and deduplication efficiency.
+* **Native Autocompletion:** JANUS includes a dynamically generated Bash completion script that queries the SQLite database in real-time to suggest available commands and cryptographic commit hashes.
 
 ---
 
-## 🛠 Prerequisites & Build
+## Prerequisites and Compilation
 
-Requires a **Linux** environment (Ubuntu 22.04+ recommended).
+This project requires a Linux environment with standard C++ compilation toolchains and specific development libraries.
 
-### Install Dependencies
-
+**Dependencies:**
 ```bash
 sudo apt update
 sudo apt install -y build-essential cmake libfuse3-dev libsqlite3-dev libssl-dev pkg-config
 ```
 
-### Build
-
+**Build Process:**
 ```bash
-git clone <repo-url> janus
-cd janus
-cmake -B build
-cmake --build build
-```
-
-The compiled binary is at `build/janus`.
-
----
-
-##  Usage
-
-All commands are run from the **same directory** where you want the filesystem to live. Janus creates two artefacts in that directory:
-- `janus_meta.db` — SQLite metadata store
-- `.janus/blocks/` — CAS block pool
-
-### Mount the filesystem
-
-```bash
-./build/janus mount <mountpoint>
-```
-
-Mounts the FUSE filesystem at `<mountpoint>`. Runs in the foreground (`-f`). Open a second terminal to interact with files.
-
-```bash
-mkdir /tmp/mnt
-./build/janus mount /tmp/mnt
-
-# In another terminal:
-echo "hello world" > /tmp/mnt/hello.txt
-cat /tmp/mnt/hello.txt
-ls /tmp/mnt
-```
-
-To unmount: `fusermount3 -u /tmp/mnt`
-
-### Commit a snapshot
-
-```bash
-./build/janus commit
-# Committed snapshot: a3f8c2d1e4b7...
-```
-
-Generates a manifest of all tracked inodes (excluding `.janusignore` entries) and writes it as a CAS block. Prints the commit hash.
-
-### View snapshot history
-
-```bash
-./build/janus log
-# Snapshot ID: 3 | Time: 1713614400 | Hash: a3f8c2d1e4b7...
-# Snapshot ID: 2 | Time: 1713610800 | Hash: 9e1d5f6a2c0b...
-# Snapshot ID: 1 | Time: 1713607200 | Hash: 7b2a4e8c1f3d...
-```
-
-Lists all snapshots in reverse-chronological order.
-
-### Restore a snapshot
-
-```bash
-./build/janus checkout <hash>
-# Successfully checked out snapshot: a3f8c2d1e4b7...
-```
-
-Atomically reconstructs the filesystem's past state. Files matching `.janusignore` rules are preserved through the rewrite.
-
-### Diff two snapshots
-
-```bash
-./build/janus diff <hash1> <hash2>
-```
-
-`hash1` is the **older** baseline; `hash2` is the **newer** state. Example output:
-
-```
-[+] Added:    newfeature.cpp
-[~] Modified: config.cfg
-[-] Removed:  deprecated.log
+mkdir build && cd build
+cmake ..
+make
 ```
 
 ---
 
-## Project Structure
+## Operational Lifecycle and Demonstration
 
+To observe the filesystem mechanics, execution requires two distinct terminal sessions: one to host the blocking FUSE daemon, and one to execute standard POSIX and JANUS-specific commands.
+
+### 1. Mounting the Virtual Filesystem (Terminal A)
+Initialize the daemon and attach it to an arbitrary mount point.
+```bash
+mkdir -p /tmp/mt
+./janus mount /tmp/mt
 ```
+
+### 2. State Instantiation and Snapshotting (Terminal B)
+Navigate to the compiled binary directory, configure preservation parameters, and establish the initial filesystem state.
+```bash
+cd build
+
+# Establish Dynamic Preservation Rules
+echo "*.log" > /tmp/mt/.janusignore
+echo "secret.key" >> /tmp/mt/.janusignore
+
+# Instantiate Files
+echo "Primary Application Logic" > /tmp/mt/main.cpp
+echo "Diagnostic Output" > /tmp/mt/debug.log
+
+# Serialize State (Commit)
+./janus commit -m "Initial system state"
+# Note the resulting SHA-256 Hash 1
+```
+
+### 3. State Comparison and Analysis (Terminal B)
+Simulate subsequent filesystem mutations and utilize the in-memory Diff engine.
+```bash
+# Mutate the Filesystem
+echo "Secondary Application Logic" > /tmp/mt/module.cpp
+
+# Serialize State (Commit)
+./janus commit -m "Added secondary module"
+# Note the resulting SHA-256 Hash 2
+
+# Compare the Timelines
+./janus diff <HASH_1> <HASH_2>
+# Expected Output: [+] Added: module.cpp (Note: debug.log is inherently ignored)
+```
+
+### 4. Temporal Restoration (Terminal B)
+Demonstrate the rollback mechanics while proving the efficacy of the dynamic state preservation engine (`.janusignore`).
+```bash
+# Instantiate a restricted file matching ignore rules
+echo "RESTRICTED_KEY=alpha_numeric" > /tmp/mt/secret.key
+
+# Execute Temporal Restoration to State 1
+./janus checkout <HASH_1>
+```
+
+**Verification:** Upon restarting the daemon in Terminal A, executing `ls -a /tmp/mt` in Terminal B will yield the following deterministic outcome:
+* `module.cpp` has been successfully purged from the metadata tables.
+* `main.cpp` has been restored to its original state.
+* `.janusignore`, `debug.log`, and `secret.key` have safely bypassed the database wipe and persist in the current working directory.
+
+---
+
+## Repository Structure
+
+```text
 janus/
-├── CMakeLists.txt          # CMake build — C++17, FUSE3, SQLite3, libcrypto
 ├── src/
-│   ├── main.cpp            # CLI entrypoint — command dispatcher
-│   ├── JanusFS.h / .cpp    # FUSE handler layer (getattr, readdir, read, write, create, unlink)
-│   ├── Database.h / .cpp   # SQLite metadata engine + snapshot/checkout/diff/.janusignore logic
-│   └── BlockStore.h / .cpp # CAS engine — SHA-256 hashing, atomic block I/O, deduplication
-└── build/                  # CMake output directory (git-ignored)
+│   ├── main.cpp         # Command-line router and FUSE initialization
+│   ├── JanusFS.cpp      # POSIX-to-C++ FUSE intercept handlers
+│   ├── Database.cpp     # SQLite ACID engine, diffing, and state management
+│   ├── BlockStore.cpp   # OpenSSL SHA-256 CAS engine
+│   └── *.h              # Header declarations
+├── CMakeLists.txt       # Build system configuration
+├── janus-completion.bash# Interactive shell autocompletion script
+└── README.md
 ```
 
----
-
-## Crash Consistency Guarantees
-
-| Layer | Mechanism |
-|---|---|
-| Metadata | SQLite WAL mode; all multi-step mutations wrapped in explicit `BEGIN / COMMIT / ROLLBACK` |
-| Block writes | Randomised `.tmp` file + `std::filesystem::rename` (atomic at the VFS level) |
-| Checkout | Single transaction covering all three phases; rolls back entirely on any error |
-| RAII | `unique_ptr` custom deleters for `sqlite3*`, `sqlite3_stmt*`, and `EVP_MD_CTX*` — no resource leaks on exception paths |
-
----
-
-## Design Decisions & Trade-offs
-
-- **Single-block files** — each inode maps to exactly one `file_blocks` row (`block_index = 0`). Multi-block chunking is a natural future extension.
-- **Flat namespace** — the filesystem presents a single directory. Subdirectory support would require a parent-inode column and recursive `readdir` logic.
-- **Manifest as CAS blob** — storing snapshots as content-addressed objects means the snapshot log itself is deduplicated; identical filesystem states produce the same commit hash.
-- **Ignore rules are live** — `.janusignore` is read from the live database on every `commit` and `checkout`, so rules take effect immediately without restarting the daemon.
-
+## System Teardown
+To safely unmount the filesystem and purge all associated databases and cryptographic block stores:
+```bash
+sudo umount -l /tmp/mt
+rm -rf build/janus_meta.db* build/.janus/
+```
