@@ -221,6 +221,20 @@ int JanusFS::read(const char* path, char* buf, size_t size, off_t offset, struct
     }
 }
 
+int JanusFS::unlink(const char* path) {
+    std::string filename = path + 1;
+    try {
+        if (db.removeInode(filename)) {
+            return 0;
+        } else {
+            return -ENOENT;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "\n[FUSE FATAL ERROR in " << __func__ << "]: " << e.what() << "\n\n";
+        return -EIO;
+    }
+}
+
 // Static Wrappers
 static JanusFS* get_instance() {
     struct fuse_context* context = fuse_get_context();
@@ -246,3 +260,8 @@ int JanusFS::wrap_create(const char* path, mode_t mode, struct fuse_file_info* f
 int JanusFS::wrap_write(const char* path, const char* buf, size_t size, off_t offset, struct fuse_file_info* fi) {
     return get_instance()->write(path, buf, size, offset, fi);
 }
+
+int JanusFS::wrap_unlink(const char* path) {
+    return get_instance()->unlink(path);
+}
+

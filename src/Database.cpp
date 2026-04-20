@@ -150,3 +150,106 @@ std::string Database::getLatestSnapshotHash() {
     }
     return "";
 }
+
+void Database::checkoutSnapshot(BlockStore& cas, const std::string& commit_hash) {
+    std::vector<uint8_t> data = cas.readBlock(commit_hash);
+    std::string manifest(data.begin(), data.end());
+
+    beginTransaction();
+    try {
+        executeQuery("DELETE FROM file_blocks;");
+        executeQuery("DELETE FROM inodes;");
+
+        std::istringstream iss(manifest);
+        std::string line;
+        while (std::getline(iss, line)) {
+            if (line.empty()) continue;
+
+            std::vector<std::string> tokens;
+            std::string token;
+            std::istringstream line_stream(line);
+            while (std::getline(line_stream, token, '|')) {
+                tokens.push_back(token);
+            }
+
+            if (tokens.size() != 5 || tokens[0] != "FILE") {
+                throw std::runtime_error("Malformed manifest line: " + line);
+            }
+
+            std::string filename = tokens[1];
+            int size = std::stoi(tokens[2]);
+            int mode = std::stoi(tokens[3]);
+            std::string block_hash = tokens[4];
+
+            auto insertInode = prepareStatement(
+                "INSERT INTO inodes (filename, mode, size, mtime) VALUES (?, ?, ?, strftime('%s','now'))"
+            );
+            sqlite3_bind_text(insertInode.get(), 1, filename.c_str(), -1, SQLITE_STATIC);
+            sqlite3_bind_int(insertInode.get(), 2, mode);
+            sqlite3_bind_int(insertInode.get(), 3, size);
+
+            if (sqlite3_step(insertInode.get()) != SQLITE_DONE) {
+                const char* err = sqlite3_errmsg(db.get());
+                throw std::runtime_error(std::string("Failed to insert inode: ") + (err ? err : ""));
+            }
+
+            sqlite3_int64 inode_id = sqlite3_last_insert_rowid(db.get());
+
+            if (block_hash != "EMPTY") {
+                auto insertBlock = prepareStatement(
+                    "INSERT INTO file_blocks (inode_id, block_index, block_hash) VALUES (?, 0, ?)"
+                );
+                sqlite3_bind_int64(insertBlock.get(), 1, inode_id);
+                sqlite3_bind_text(insertBlock.get(), 2, block_hash.c_str(), -1, SQLITE_STATIC);
+
+                if (sqlite3_step(insertBlock.get()) != SQLITE_DONE) {
+                    const char* err = sqlite3_errmsg(db.get());
+                    throw std::runtime_error(std::string("Failed to insert file block mapping: ") + (err ? err : ""));
+                }
+                
+                auto blockStmt = prepareStatement("INSERT OR IGNORE INTO blocks (hash, size, refcount) VALUES (?, ?, 1)");
+                sqlite3_bind_text(blockStmt.get(), 1, block_hash.c_str(), -1, SQLITE_STATIC);
+                sqlite3_bind_int(blockStmt.get(), 2, size);
+                sqlite3_step(blockStmt.get());
+            }
+        }
+        commitTransaction();
+    } catch (...) {
+        rollbackTransaction();
+        throw;
+    }
+}
+
+bool Database::removeInode(const std::string& filename) {
+    bool removed = false;
+    beginTransaction();
+    try {
+        auto stmtId = prepareStatement("SELECT id FROM inodes WHERE filename = ?");
+        sqlite3_bind_text(stmtId.get(), 1, filename.c_str(), -1, SQLITE_STATIC);
+        
+        if (sqlite3_step(stmtId.get()) == SQLITE_ROW) {
+            sqlite3_int64 inode_id = sqlite3_column_int64(stmtId.get(), 0);
+            
+            auto delFb = prepareStatement("DELETE FROM file_blocks WHERE inode_id = ?");
+            sqlite3_bind_int64(delFb.get(), 1, inode_id);
+            if (sqlite3_step(delFb.get()) != SQLITE_DONE) {
+                const char* err = sqlite3_errmsg(db.get());
+                throw std::runtime_error(std::string("Failed to delete file blocks: ") + (err ? err : ""));
+            }
+            
+            auto delIn = prepareStatement("DELETE FROM inodes WHERE id = ?");
+            sqlite3_bind_int64(delIn.get(), 1, inode_id);
+            if (sqlite3_step(delIn.get()) != SQLITE_DONE) {
+                const char* err = sqlite3_errmsg(db.get());
+                throw std::runtime_error(std::string("Failed to delete inode: ") + (err ? err : ""));
+            }
+            removed = true;
+        }
+        commitTransaction();
+    } catch (...) {
+        rollbackTransaction();
+        throw;
+    }
+    return removed;
+}
+
