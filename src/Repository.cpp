@@ -79,16 +79,11 @@ Repository::getSnapshotHistory()
 {
     return metadata_.getSnapshotHistory();
 }
-void Repository::printStats(
-    bool asJson)
+void Repository::printStats(bool asJson)
 {
     metadata_.printStats(asJson);
 }
-void Repository::printStats(
-    bool asJson)
-{
-    metadata_.printStats(asJson);
-}
+
 
 StatementPtr Repository::prepareStatement(
     const std::string& query)
