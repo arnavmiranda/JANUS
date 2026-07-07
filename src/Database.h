@@ -45,7 +45,6 @@ public:
     std::string commitSnapshot(BlockStore& cas, const std::string& message = "", const std::string& parent_hash = "");
     std::string getLatestSnapshotHash();
     void checkoutSnapshot(BlockStore& cas, const std::string& commit_hash);
-    bool removeInode(const std::string& filename);
     void diffSnapshots(BlockStore& cas, const std::string& hash1, const std::string& hash2);
     std::vector<std::pair<std::string, std::string>> getSnapshotHistory();
     void printStats(bool asJson);

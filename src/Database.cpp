@@ -342,12 +342,31 @@ void Database::writeFile(
             }
         }
 
+        std::vector<std::string> blocksToDelete;
+
+        for (const auto& hash : oldBlocks)
+        {
+            if (decrementRefcount(hash))
+            {
+                deleteBlockMetadata(hash);
+                blocksToDelete.push_back(hash);
+            }
+        }
+
         updateInodeMetadata(
             inodeId,
             data.size());
 
         commitTransaction();
+
+        #ifndef NDEBUG
         verifyReferenceCounts();
+        #endif
+
+        for (const auto& hash : blocksToDelete)
+        {
+            cas.deleteBlock(hash);
+        }
     }
     catch (...)
     {
@@ -366,18 +385,98 @@ std::vector<uint8_t> Database::readFile(
         inodeId,
         cas);
 }
+
+
 void Database::unlinkFile(
     const std::string& filename,
     BlockStore& cas)
 {
-    (void)cas;
+    beginTransaction();
 
-    if (!removeInode(filename))
+    std::vector<std::string> blocksToDelete;
+
+    try
     {
-        throw std::runtime_error(
-            "File does not exist.");
+        int inodeId = getInodeId(filename);
+
+        //
+        // Remember which blocks this file owns.
+        //
+        auto oldBlocks =
+            getCurrentBlockHashes(inodeId);
+
+        //
+        // Remove mappings.
+        //
+        {
+            auto stmt = prepareStatement(
+                "DELETE FROM file_blocks "
+                "WHERE inode_id = ?");
+
+            sqlite3_bind_int(
+                stmt.get(),
+                1,
+                inodeId);
+
+            if (sqlite3_step(stmt.get()) != SQLITE_DONE)
+            {
+                throw std::runtime_error(
+                    "Failed to delete file mappings.");
+            }
+        }
+
+        //
+        // Remove inode.
+        //
+        {
+            auto stmt = prepareStatement(
+                "DELETE FROM inodes "
+                "WHERE id = ?");
+
+            sqlite3_bind_int(
+                stmt.get(),
+                1,
+                inodeId);
+
+            if (sqlite3_step(stmt.get()) != SQLITE_DONE)
+            {
+                throw std::runtime_error(
+                    "Failed to delete inode.");
+            }
+        }
+
+        //
+        // Release ownership.
+        //
+        for (const auto& hash : oldBlocks)
+        {
+            if (decrementRefcount(hash))
+            {
+                deleteBlockMetadata(hash);
+
+                blocksToDelete.push_back(hash);
+            }
+        }
+
+        commitTransaction();
+
+#ifndef NDEBUG
+        verifyReferenceCounts();
+#endif
+
+        //
+        // Physical cleanup happens AFTER commit.
+        //
+        for (const auto& hash : blocksToDelete)
+        {
+            cas.deleteBlock(hash);
+        }
     }
-    verifyReferenceCounts();
+    catch (...)
+    {
+        rollbackTransaction();
+        throw;
+    }
 }
 
 
@@ -938,39 +1037,6 @@ void Database::checkoutSnapshot(BlockStore& cas, const std::string& commit_hash)
         rollbackTransaction();
         throw;
     }
-}
-
-bool Database::removeInode(const std::string& filename) {
-    bool removed = false;
-    beginTransaction();
-    try {
-        auto stmtId = prepareStatement("SELECT id FROM inodes WHERE filename = ?");
-        sqlite3_bind_text(stmtId.get(), 1, filename.c_str(), -1, SQLITE_STATIC);
-        
-        if (sqlite3_step(stmtId.get()) == SQLITE_ROW) {
-            sqlite3_int64 inode_id = sqlite3_column_int64(stmtId.get(), 0);
-            
-            auto delFb = prepareStatement("DELETE FROM file_blocks WHERE inode_id = ?");
-            sqlite3_bind_int64(delFb.get(), 1, inode_id);
-            if (sqlite3_step(delFb.get()) != SQLITE_DONE) {
-                const char* err = sqlite3_errmsg(db.get());
-                throw std::runtime_error(std::string("Failed to delete file blocks: ") + (err ? err : ""));
-            }
-            
-            auto delIn = prepareStatement("DELETE FROM inodes WHERE id = ?");
-            sqlite3_bind_int64(delIn.get(), 1, inode_id);
-            if (sqlite3_step(delIn.get()) != SQLITE_DONE) {
-                const char* err = sqlite3_errmsg(db.get());
-                throw std::runtime_error(std::string("Failed to delete inode: ") + (err ? err : ""));
-            }
-            removed = true;
-        }
-        commitTransaction();
-    } catch (...) {
-        rollbackTransaction();
-        throw;
-    }
-    return removed;
 }
 
 void Database::diffSnapshots(BlockStore& cas, const std::string& hash1, const std::string& hash2) {
