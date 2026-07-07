@@ -1,5 +1,6 @@
 #include "Database.h"
 #include "BlockStore.h"
+#include "BlockChunker.h"
 #include <sstream>
 #include <vector>
 #include <ctime>
@@ -298,14 +299,18 @@ std::vector<uint8_t> Database::loadFileContents(
     return result;
 }
 
-FileLayout Database::storeFileContents(
-    const std::vector<uint8_t>& data,
-    BlockStore& cas)
+FileLayout Database::storeFileContents(const std::vector<uint8_t>& data, BlockStore& cas)
 {
     FileLayout layout;
     layout.logicalSize = data.size();
-    layout.blockHashes.push_back(cas.writeBlock(data));
-    
+
+    auto blocks = BlockChunker::split(data);
+
+    for (const auto& block : blocks)
+    {
+        layout.blockHashes.push_back( cas.writeBlock(block.bytes));
+    }
+
     return layout;
 }
 
@@ -315,14 +320,16 @@ void Database::commitFileContents( int inodeId, const std::vector<uint8_t>& data
 
         const auto oldLayout = getCurrentFileLayout(inodeId);
 
-        // Acquire ownership.
-        for (const auto& hash : newLayout.blockHashes)
+        auto blocks = BlockChunker::split(data);
+
+        for (size_t i = 0; i < newLayout.blockHashes.size(); ++i)
         {
             insertBlockMetadata(
-                hash,
-                data.size());  // currently one block == whole file
+                newLayout.blockHashes[i],
+                blocks[i].bytes.size());
 
-            incrementRefcount(hash);
+            incrementRefcount(
+                newLayout.blockHashes[i]);
         }
 
         // Update inode → block mapping.
