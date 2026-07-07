@@ -1,6 +1,8 @@
 #include "Database.h"
 #include "BlockStore.h"
 #include "BlockChunker.h"
+#include "FileAssembler.h"
+
 #include <sstream>
 #include <vector>
 #include <ctime>
@@ -280,17 +282,20 @@ void Database::replaceFileMappings(
 std::vector<uint8_t> Database::loadFileContents(int inodeId, BlockStore& cas)
 {
     FileLayout layout = getCurrentFileLayout(inodeId);
-    std::vector<uint8_t> result;
+
+    std::vector<FileBlock> blocks;
+
+    blocks.reserve(layout.blockHashes.size());
 
     for (const auto& hash : layout.blockHashes)
     {
-        auto block = cas.readBlock(hash);
-        result.insert( result.end(), block.begin(), block.end());
+        FileBlock block;
+        block.bytes = cas.readBlock(hash);
+
+        blocks.push_back(std::move(block));
     }
 
-    result.resize(layout.logicalSize);
-
-    return result;
+    return FileAssembler::assemble(blocks, layout.logicalSize);
 }
 
 FileLayout Database::storeFileContents(const std::vector<uint8_t>& data, BlockStore& cas)

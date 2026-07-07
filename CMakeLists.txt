@@ -13,7 +13,9 @@ pkg_check_modules(LIBCRYPTO REQUIRED libcrypto)
 
 add_executable(janus src/main.cpp src/JanusFS.cpp src/Database.cpp src/BlockStore.cpp
     src/BlockChunker.h
-    src/BlockChunker.cpp)
+    src/BlockChunker.cpp
+    src/FileAssembler.h
+    src/FileAssembler.cpp)
 
 target_include_directories(janus PRIVATE ${FUSE3_INCLUDE_DIRS} ${SQLITE3_INCLUDE_DIRS} ${LIBCRYPTO_INCLUDE_DIRS})
 target_link_options(janus PRIVATE ${FUSE3_LDFLAGS} ${SQLITE3_LDFLAGS} ${LIBCRYPTO_LDFLAGS})
