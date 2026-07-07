@@ -113,6 +113,147 @@ void Database::commitTransaction() {
 void Database::rollbackTransaction() {
     executeQuery("ROLLBACK;");
 }
+// ---------------------------------------------------------------------------
+// Metadata helpers
+// ---------------------------------------------------------------------------
+
+int Database::getInodeId(const std::string& filename)
+{
+    auto stmt = prepareStatement(
+        "SELECT id FROM inodes WHERE filename = ?");
+
+    sqlite3_bind_text(
+        stmt.get(),
+        1,
+        filename.c_str(),
+        -1,
+        SQLITE_STATIC);
+
+    int rc = sqlite3_step(stmt.get());
+
+    if (rc == SQLITE_ROW)
+    {
+        return sqlite3_column_int(stmt.get(), 0);
+    }
+
+    if (rc == SQLITE_DONE)
+    {
+        throw std::runtime_error(
+            "File does not exist: " + filename);
+    }
+
+    throw std::runtime_error(
+        "Failed to lookup inode: " +
+        std::string(sqlite3_errmsg(db.get())));
+}
+
+std::vector<std::string> Database::getCurrentBlockHashes(int inodeId)
+{
+    std::vector<std::string> hashes;
+
+    auto stmt = prepareStatement(
+        "SELECT block_hash "
+        "FROM file_blocks "
+        "WHERE inode_id = ? "
+        "ORDER BY block_index");
+
+    sqlite3_bind_int(stmt.get(), 1, inodeId);
+
+    while (true)
+    {
+        int rc = sqlite3_step(stmt.get());
+
+        if (rc == SQLITE_DONE)
+            break;
+
+        if (rc != SQLITE_ROW)
+        {
+            throw std::runtime_error(
+                "Failed to lookup block mappings: " +
+                std::string(sqlite3_errmsg(db.get())));
+        }
+
+        hashes.emplace_back(
+            reinterpret_cast<const char*>(
+                sqlite3_column_text(stmt.get(), 0)));
+    }
+
+    return hashes;
+}
+
+void Database::updateInodeMetadata(
+    int inodeId,
+    size_t newSize)
+{
+    auto stmt = prepareStatement(
+        "UPDATE inodes "
+        "SET size = ?, "
+        "mtime = strftime('%s','now') "
+        "WHERE id = ?");
+
+    sqlite3_bind_int(
+        stmt.get(),
+        1,
+        static_cast<int>(newSize));
+
+    sqlite3_bind_int(
+        stmt.get(),
+        2,
+        inodeId);
+
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE)
+    {
+        throw std::runtime_error(
+            "Failed to update inode metadata: " +
+            std::string(sqlite3_errmsg(db.get())));
+    }
+}
+void Database::replaceFileMappings(
+    int inodeId,
+    const std::vector<std::string>& newBlockHashes)
+{
+    // Remove existing mappings.
+    {
+        auto stmt = prepareStatement(
+            "DELETE FROM file_blocks "
+            "WHERE inode_id = ?");
+
+        sqlite3_bind_int(stmt.get(), 1, inodeId);
+
+        if (sqlite3_step(stmt.get()) != SQLITE_DONE)
+        {
+            throw std::runtime_error(
+                "Failed to delete existing block mappings: " +
+                std::string(sqlite3_errmsg(db.get())));
+        }
+    }
+
+    // Insert replacement mappings.
+    for (size_t i = 0; i < newBlockHashes.size(); ++i)
+    {
+        auto stmt = prepareStatement(
+            "INSERT INTO file_blocks "
+            "(inode_id, block_index, block_hash) "
+            "VALUES (?, ?, ?)");
+
+        sqlite3_bind_int(stmt.get(), 1, inodeId);
+        sqlite3_bind_int(stmt.get(), 2, static_cast<int>(i));
+
+        sqlite3_bind_text(
+            stmt.get(),
+            3,
+            newBlockHashes[i].c_str(),
+            -1,
+            SQLITE_STATIC);
+
+        if (sqlite3_step(stmt.get()) != SQLITE_DONE)
+        {
+            throw std::runtime_error(
+                "Failed to insert block mapping: " +
+                std::string(sqlite3_errmsg(db.get())));
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // .janusignore helpers
@@ -561,3 +702,104 @@ void Database::diffSnapshots(BlockStore& cas, const std::string& hash1, const st
     }
 }
 
+
+// int Database::write(const char* path, const char* buf, size_t size, off_t offset, struct fuse_file_info* fi) {
+//     (void) fi;
+//     std::string filename = path + 1;
+
+//     try {
+//         db.beginTransaction();
+        
+//         auto getInodeStmt = db.prepareStatement("SELECT id FROM inodes WHERE filename = ?");
+//         sqlite3_bind_text(getInodeStmt.get(), 1, filename.c_str(), -1, SQLITE_STATIC);
+        
+//         int rc = sqlite3_step(getInodeStmt.get());
+//         if (rc == SQLITE_DONE) {
+//             db.rollbackTransaction();
+//             return -ENOENT;
+//         } else if (rc != SQLITE_ROW) {
+//             const char* err = sqlite3_errmsg(sqlite3_db_handle(getInodeStmt.get()));
+//             throw std::runtime_error(std::string("SELECT id FROM inodes failed: ") + err);
+//         }
+//         int inode_id = sqlite3_column_int(getInodeStmt.get(), 0);
+
+//         // Load the current file contents (if any)
+//         std::vector<uint8_t> data;
+
+//         {
+//             auto currentBlockStmt = db.prepareStatement(
+//                 "SELECT block_hash FROM file_blocks "
+//                 "WHERE inode_id = ? "
+//                 "ORDER BY block_index LIMIT 1");
+
+//             sqlite3_bind_int(currentBlockStmt.get(), 1, inode_id);
+
+//             int rc = sqlite3_step(currentBlockStmt.get());
+
+//             if (rc == SQLITE_ROW) {
+//                 const char* oldHash =
+//                     reinterpret_cast<const char*>(sqlite3_column_text(currentBlockStmt.get(), 0));
+
+//                 data = cas.readBlock(oldHash);
+//             }
+//         }
+
+//         size_t requiredSize = static_cast<size_t>(offset) + size;
+
+//         if (data.size() < requiredSize) {
+//             data.resize(requiredSize, 0);
+//         }
+
+//         std::copy(
+//             buf,
+//             buf + size,
+//             data.begin() + offset
+//         );
+
+//         std::string hash = cas.writeBlock(data);
+
+//         auto blockStmt = db.prepareStatement("INSERT OR IGNORE INTO blocks (hash, size, refcount) VALUES (?, ?, 1)");
+//         sqlite3_bind_text(blockStmt.get(), 1, hash.c_str(), -1, SQLITE_STATIC);
+//         sqlite3_bind_int(blockStmt.get(), 2, size);
+        
+//         if (sqlite3_step(blockStmt.get()) != SQLITE_DONE) {
+//             const char* err = sqlite3_errmsg(sqlite3_db_handle(blockStmt.get()));
+//             throw std::runtime_error(std::string("INSERT INTO blocks failed: ") + err);
+//         }
+
+//         auto cleanMappings = db.prepareStatement("DELETE FROM file_blocks WHERE inode_id = ?");
+//         sqlite3_bind_int(cleanMappings.get(), 1, inode_id);
+        
+//         if (sqlite3_step(cleanMappings.get()) != SQLITE_DONE) {
+//             const char* err = sqlite3_errmsg(sqlite3_db_handle(cleanMappings.get()));
+//             throw std::runtime_error(std::string("DELETE FROM file_blocks failed: ") + err);
+//         }
+
+//         auto mappingStmt = db.prepareStatement("INSERT INTO file_blocks (inode_id, block_index, block_hash) VALUES (?, 0, ?)");
+//         sqlite3_bind_int(mappingStmt.get(), 1, inode_id);
+//         sqlite3_bind_text(mappingStmt.get(), 2, hash.c_str(), -1, SQLITE_STATIC);
+        
+//         if (sqlite3_step(mappingStmt.get()) != SQLITE_DONE) {
+//             const char* err = sqlite3_errmsg(sqlite3_db_handle(mappingStmt.get()));
+//             throw std::runtime_error(std::string("INSERT INTO file_blocks failed: ") + err);
+//         }
+
+//         auto sizeStmt = db.prepareStatement("UPDATE inodes SET size = ?, mtime = strftime('%s','now') WHERE id = ?");
+//         sqlite3_bind_int(sizeStmt.get(), 1,
+//                  static_cast<int>(data.size()));
+//         sqlite3_bind_int(sizeStmt.get(), 2, inode_id);
+        
+//         if (sqlite3_step(sizeStmt.get()) != SQLITE_DONE) {
+//             const char* err = sqlite3_errmsg(sqlite3_db_handle(sizeStmt.get()));
+//             throw std::runtime_error(std::string("UPDATE inodes failed: ") + err);
+//         }
+
+//         db.commitTransaction();
+//         return size;
+
+//     } catch (const std::exception& e) {
+//         std::cerr << "\n[FUSE FATAL ERROR in " << __func__ << "]: " << e.what() << "\n\n";
+//         try { db.rollbackTransaction(); } catch(...) {}
+//         return -EIO;
+//     }
+// }

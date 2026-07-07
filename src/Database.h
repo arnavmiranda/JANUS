@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <sqlite3.h>
 #include <string>
 #include <memory>
@@ -49,10 +50,42 @@ public:
     std::vector<std::pair<std::string, std::string>> getSnapshotHistory();
     void printStats(bool asJson);
 
+
+    // File operations (storage engine API)
+    void writeFile(
+        const std::string& filename,
+        const char* buffer,
+        size_t size,
+        off_t offset,
+        BlockStore& cas);
+
+    std::vector<uint8_t> readFile(
+        const std::string& filename,
+        BlockStore& cas);
+
+    void unlinkFile(
+        const std::string& filename,
+        BlockStore& cas);
+
 private:
     DatabasePtr db;
+
+    //metadata
+    int getInodeId(const std::string& filename);
+
+    std::vector<std::string> getCurrentBlockHashes(int inodeId);
+
+    void Database::replaceFileMappings(
+        int inodeId,
+        const std::vector<std::string>& newBlockHashes);
+
+    void updateInodeMetadata(
+        int inodeId,
+        size_t newSize);
 
     // .janusignore helpers
     std::vector<std::string> getIgnoreList(BlockStore& cas);
     bool isIgnored(const std::string& filename, const std::vector<std::string>& ignoreList);
+
+    
 };
