@@ -15,7 +15,10 @@ add_executable(janus src/main.cpp src/JanusFS.cpp src/Database.cpp src/BlockStor
     src/BlockChunker.h
     src/BlockChunker.cpp
     src/FileAssembler.h
-    src/FileAssembler.cpp)
+    src/FileAssembler.cpp
+    src/Repository.h
+    src/Repository.cpp
+)
 
 target_include_directories(janus PRIVATE ${FUSE3_INCLUDE_DIRS} ${SQLITE3_INCLUDE_DIRS} ${LIBCRYPTO_INCLUDE_DIRS})
 target_link_options(janus PRIVATE ${FUSE3_LDFLAGS} ${SQLITE3_LDFLAGS} ${LIBCRYPTO_LDFLAGS})
