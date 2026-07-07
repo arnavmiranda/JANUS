@@ -51,6 +51,10 @@ public:
     void printStats(bool asJson);
 
 
+    //internal consistency verifier that validates the integirty of the cas metadata after every ownership transition
+    //this is public so that we can later call this with writeFile, unlinkFile, checkout, tests, etc
+    void verifyReferenceCounts();
+
     // File operations (storage engine API)
     void writeFile(
         const std::string& filename,

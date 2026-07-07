@@ -312,15 +312,42 @@ void Database::writeFile(
         auto newBlocks =
             storeFileContents(data, cas);
 
+        const auto oldBlocks =
+            getCurrentBlockHashes(
+                inodeId);
+
+        // Acquire ownership.
+        for (const auto& hash : newBlocks)
+        {
+            insertBlockMetadata(
+                hash,
+                data.size());
+
+            incrementRefcount(hash);
+        }
+
+        // Update inode → block mapping.
         replaceFileMappings(
             inodeId,
             newBlocks);
+
+        // Release ownership.
+        for (const auto& hash : oldBlocks)
+        {
+            if (decrementRefcount(hash))
+            {
+                deleteBlockMetadata(hash);
+
+                cas.deleteBlock(hash);
+            }
+        }
 
         updateInodeMetadata(
             inodeId,
             data.size());
 
         commitTransaction();
+        verifyReferenceCounts();
     }
     catch (...)
     {
@@ -350,6 +377,7 @@ void Database::unlinkFile(
         throw std::runtime_error(
             "File does not exist.");
     }
+    verifyReferenceCounts();
 }
 
 
@@ -477,6 +505,76 @@ void Database::deleteBlockMetadata(
             std::string(sqlite3_errmsg(db.get())));
     }
 }
+
+
+void Database::verifyReferenceCounts()
+{
+    auto stmt = prepareStatement(
+        "SELECT hash, refcount "
+        "FROM blocks");
+
+    while (true)
+    {
+        int rc = sqlite3_step(stmt.get());
+
+        if (rc == SQLITE_DONE)
+            break;
+
+        if (rc != SQLITE_ROW)
+        {
+            throw std::runtime_error(
+                "verifyReferenceCounts(): failed to iterate blocks.");
+        }
+
+        std::string hash =
+            reinterpret_cast<const char*>(
+                sqlite3_column_text(stmt.get(), 0));
+
+        int storedRefcount =
+            sqlite3_column_int(stmt.get(), 1);
+
+        auto countStmt = prepareStatement(
+            "SELECT COUNT(*) "
+            "FROM file_blocks "
+            "WHERE block_hash = ?");
+
+        sqlite3_bind_text(
+            countStmt.get(),
+            1,
+            hash.c_str(),
+            -1,
+            SQLITE_STATIC);
+
+        if (sqlite3_step(countStmt.get()) != SQLITE_ROW)
+        {
+            throw std::runtime_error(
+                "verifyReferenceCounts(): failed to count references.");
+        }
+
+        int actualRefcount =
+            sqlite3_column_int(
+                countStmt.get(),
+                0);
+
+        if (storedRefcount != actualRefcount)
+        {
+            throw std::runtime_error(
+                "Reference count mismatch for block " +
+                hash +
+                " (stored=" +
+                std::to_string(storedRefcount) +
+                ", actual=" +
+                std::to_string(actualRefcount) +
+                ")");
+        }
+    }
+}
+
+
+
+
+
+
 
 
 
@@ -834,8 +932,8 @@ void Database::checkoutSnapshot(BlockStore& cas, const std::string& commit_hash)
                 sqlite3_step(blockStmt.get());
             }
         }
-
         commitTransaction();
+        verifyReferenceCounts();
     } catch (...) {
         rollbackTransaction();
         throw;
