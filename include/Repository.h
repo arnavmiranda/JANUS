@@ -1,7 +1,7 @@
 #pragma once
-
 #include "Database.h"
 #include "BlockStore.h"
+#include "StorageEngine.h"
 
 #include <string>
 
@@ -61,7 +61,9 @@ public:
 
 private:
 
-    Database metadata_;
+private:
 
+    Database metadata_;
     BlockStore objectStore_;
+    StorageEngine storage_;
 };

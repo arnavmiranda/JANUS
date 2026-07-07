@@ -2,11 +2,11 @@
 
 Repository::Repository(const std::string& repositoryRoot)
     : metadata_(repositoryRoot + "/janus_meta.db"),
-      objectStore_(repositoryRoot)
+      objectStore_(repositoryRoot),
+      storage_(objectStore_)
 {
     metadata_.initSchema();
 }
-
 
 void Repository::write(
     const std::string& filename,
@@ -14,21 +14,57 @@ void Repository::write(
     size_t size,
     off_t offset)
 {
-    metadata_.writeFile(
-        filename,
-        buffer,
-        size,
-        offset,
-        objectStore_);
-}
+    metadata_.beginTransaction();
 
+    try
+    {
+        int inodeId =
+            metadata_.getInodeId(filename);
+
+        FileLayout layout =
+            metadata_.getCurrentFileLayout(inodeId);
+
+        std::vector<uint8_t> data =
+            storage_.loadLayout(layout);
+
+        const size_t requiredSize =
+            static_cast<size_t>(offset) + size;
+
+        if (data.size() < requiredSize)
+        {
+            data.resize(requiredSize, 0);
+        }
+
+        std::copy(
+            buffer,
+            buffer + size,
+            data.begin() + offset);
+
+        FileLayout newLayout =
+            storage_.createLayout(data);
+
+        metadata_.commitLayout(
+            inodeId,
+            newLayout,
+            objectStore_);
+    }
+    catch (...)
+    {
+        metadata_.rollbackTransaction();
+        throw;
+    }
+}
 
 std::vector<uint8_t> Repository::read(
     const std::string& filename)
 {
-    return metadata_.readFile(
-        filename,
-        objectStore_);
+    const int inodeId =
+        metadata_.getInodeId(filename);
+
+    const FileLayout layout =
+        metadata_.getCurrentFileLayout(inodeId);
+
+    return storage_.loadLayout(layout);
 }
 
 void Repository::unlink(
@@ -43,10 +79,34 @@ void Repository::truncate(
     const std::string& filename,
     size_t newSize)
 {
-    metadata_.truncateFile(
-        filename,
-        newSize,
-        objectStore_);
+    metadata_.beginTransaction();
+
+    try
+    {
+        int inodeId =
+            metadata_.getInodeId(filename);
+
+        FileLayout layout =
+            metadata_.getCurrentFileLayout(inodeId);
+
+        auto data =
+            storage_.loadLayout(layout);
+
+        data.resize(newSize, 0);
+
+        FileLayout newLayout =
+            storage_.createLayout(data);
+
+        metadata_.commitLayout(
+            inodeId,
+            newLayout,
+            objectStore_);
+    }
+    catch (...)
+    {
+        metadata_.rollbackTransaction();
+        throw;
+    }
 }
 
 

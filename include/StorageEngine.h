@@ -17,6 +17,10 @@ public:
 
     std::vector<uint8_t> load(const FileLayout& layout);
 
+    FileLayout createLayout(const std::vector<uint8_t>& bytes);
+
+    std::vector<uint8_t> loadLayout(const FileLayout& layout);
+
 private:
 
     BlockStore& objectStore_;

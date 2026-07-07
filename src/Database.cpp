@@ -278,130 +278,96 @@ void Database::replaceFileMappings(
         }
     }
 }
-
-std::vector<uint8_t> Database::loadFileContents(int inodeId, BlockStore& cas)
+void Database::commitLayout(int inodeId, const FileLayout& newLayout, BlockStore& cas)
 {
-    FileLayout layout = getCurrentFileLayout(inodeId);
+    const auto oldLayout = getCurrentFileLayout(inodeId);
 
-    std::vector<FileBlock> blocks;
-
-    blocks.reserve(layout.blockHashes.size());
-
-    for (const auto& hash : layout.blockHashes)
+    //
+    // Temporary: Database still needs block sizes.
+    // This will disappear once StorageEngine returns
+    // richer layout metadata.
+    //
+    for (const auto& hash : newLayout.blockHashes)
     {
-        FileBlock block;
-        block.bytes = cas.readBlock(hash);
+        auto block = cas.readBlock(hash);
 
-        blocks.push_back(std::move(block));
+        insertBlockMetadata(
+            hash,
+            block.size());
+
+        incrementRefcount(hash);
     }
 
-    return FileAssembler::assemble(blocks, layout.logicalSize);
-}
-
-FileLayout Database::storeFileContents(const std::vector<uint8_t>& data, BlockStore& cas)
-{
-    FileLayout layout;
-    layout.logicalSize = data.size();
-
-    auto blocks = BlockChunker::split(data);
-
-    for (const auto& block : blocks)
-    {
-        layout.blockHashes.push_back( cas.writeBlock(block.bytes));
-    }
-
-    return layout;
-}
-
-void Database::commitFileContents( int inodeId, const std::vector<uint8_t>& data, BlockStore& cas) {
-    
-        FileLayout newLayout = storeFileContents(data, cas);
-        const auto oldLayout = getCurrentFileLayout(inodeId);
-
-        auto blocks = BlockChunker::split(data);
-
-        for (size_t i = 0; i < newLayout.blockHashes.size(); ++i)
-        {
-            insertBlockMetadata(
-                newLayout.blockHashes[i],
-                blocks[i].bytes.size());
-
-            incrementRefcount(
-                newLayout.blockHashes[i]);
-        }
-
-        // Update inode → block mapping.
-        replaceFileMappings(
-            inodeId,
-            newLayout);
-
-        // Release ownership.
-
-        std::vector<std::string> blocksToDelete;
-
-        for (const auto& hash : oldLayout.blockHashes)
-        {
-            if (decrementRefcount(hash))
-            {
-                deleteBlockMetadata(hash);
-                blocksToDelete.push_back(hash);
-            }
-        }
-
-        updateInodeMetadata(
-            inodeId,
-            data.size());
-
-        commitTransaction();
-
-        #ifndef NDEBUG
-        verifyReferenceCounts();
-        #endif
-
-        for (const auto& hash : blocksToDelete)
-        {
-            cas.deleteBlock(hash);
-        }
-}
-
-void Database::writeFile(const std::string& filename, const char* buffer, size_t size, off_t offset, BlockStore& cas)
-{
-    beginTransaction();
-
-    try
-    {
-        int inodeId = getInodeId(filename);
-
-        std::vector<uint8_t> data = loadFileContents(inodeId, cas);
-
-        size_t requiredSize = static_cast<size_t>(offset) + size;
-
-        if (data.size() < requiredSize)
-        {
-            data.resize(requiredSize, 0);
-        }
-
-        std::copy(buffer, buffer + size, data.begin() + offset);
-
-        commitFileContents(inodeId, data, cas);
-    }
-    catch (...)
-    {
-        rollbackTransaction();
-        throw;
-    }
-}
-
-std::vector<uint8_t> Database::readFile(
-    const std::string& filename,
-    BlockStore& cas)
-{
-    int inodeId = getInodeId(filename);
-
-    return loadFileContents(
+    // Update inode → block mappings.
+    replaceFileMappings(
         inodeId,
-        cas);
+        newLayout);
+
+    std::vector<std::string> blocksToDelete;
+
+    for (const auto& hash : oldLayout.blockHashes)
+    {
+        if (decrementRefcount(hash))
+        {
+            deleteBlockMetadata(hash);
+            blocksToDelete.push_back(hash);
+        }
+    }
+
+    updateInodeMetadata(
+        inodeId,
+        newLayout.logicalSize);
+
+    commitTransaction();
+
+#ifndef NDEBUG
+    verifyReferenceCounts();
+#endif
+
+    for (const auto& hash : blocksToDelete)
+    {
+        cas.deleteBlock(hash);
+    }
 }
+
+// void Database::writeFile(const std::string& filename, const char* buffer, size_t size, off_t offset, BlockStore& cas)
+// {
+//     beginTransaction();
+
+//     try
+//     {
+//         int inodeId = getInodeId(filename);
+
+//         std::vector<uint8_t> data = loadLayout(inodeId, cas);
+
+//         size_t requiredSize = static_cast<size_t>(offset) + size;
+
+//         if (data.size() < requiredSize)
+//         {
+//             data.resize(requiredSize, 0);
+//         }
+
+//         std::copy(buffer, buffer + size, data.begin() + offset);
+
+//         commitFileContents(inodeId, data, cas);
+//     }
+//     catch (...)
+//     {
+//         rollbackTransaction();
+//         throw;
+//     }
+// }
+
+// std::vector<uint8_t> Database::readFile(
+//     const std::string& filename,
+//     BlockStore& cas)
+// {
+//     int inodeId = getInodeId(filename);
+
+//     return loadLayout(
+//         inodeId,
+//         cas);
+// }
 
 
 void Database::unlinkFile(
@@ -690,42 +656,42 @@ void Database::verifyReferenceCounts()
 }
 
 
-void Database::truncateFile(
-    const std::string& filename,
-    size_t newSize,
-    BlockStore& cas)
-{
-    beginTransaction();
+// void Database::truncateFile(
+//     const std::string& filename,
+//     size_t newSize,
+//     BlockStore& cas)
+// {
+//     beginTransaction();
 
-    try
-    {
-        int inodeId =
-            getInodeId(filename);
+//     try
+//     {
+//         int inodeId =
+//             getInodeId(filename);
 
-        std::vector<uint8_t> data =
-            loadFileContents(
-                inodeId,
-                cas);
+//         std::vector<uint8_t> data =
+//             loadLayout(
+//                 inodeId,
+//                 cas);
 
-        //
-        // POSIX semantics:
-        //
-        // Shrinking removes bytes.
-        // Growing appends zero bytes.
-        //
-        data.resize(newSize, 0);
+//         //
+//         // POSIX semantics:
+//         //
+//         // Shrinking removes bytes.
+//         // Growing appends zero bytes.
+//         //
+//         data.resize(newSize, 0);
 
-        commitFileContents(
-            inodeId,
-            data,
-            cas);
-    }
-    catch (...)
-    {
-        rollbackTransaction();
-        throw;
-    }
-}
+//         commitFileContents(
+//             inodeId,
+//             data,
+//             cas);
+//     }
+//     catch (...)
+//     {
+//         rollbackTransaction();
+//         throw;
+//     }
+// }
 
 
 
