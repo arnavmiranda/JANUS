@@ -124,7 +124,39 @@ int JanusFS::write(const char* path, const char* buf, size_t size, off_t offset,
         }
         int inode_id = sqlite3_column_int(getInodeStmt.get(), 0);
 
-        std::vector<uint8_t> data(buf, buf + size);
+        // Load the current file contents (if any)
+        std::vector<uint8_t> data;
+
+        {
+            auto currentBlockStmt = db.prepareStatement(
+                "SELECT block_hash FROM file_blocks "
+                "WHERE inode_id = ? "
+                "ORDER BY block_index LIMIT 1");
+
+            sqlite3_bind_int(currentBlockStmt.get(), 1, inode_id);
+
+            int rc = sqlite3_step(currentBlockStmt.get());
+
+            if (rc == SQLITE_ROW) {
+                const char* oldHash =
+                    reinterpret_cast<const char*>(sqlite3_column_text(currentBlockStmt.get(), 0));
+
+                data = cas.readBlock(oldHash);
+            }
+        }
+
+        size_t requiredSize = static_cast<size_t>(offset) + size;
+
+        if (data.size() < requiredSize) {
+            data.resize(requiredSize, 0);
+        }
+
+        std::copy(
+            buf,
+            buf + size,
+            data.begin() + offset
+        );
+
         std::string hash = cas.writeBlock(data);
 
         auto blockStmt = db.prepareStatement("INSERT OR IGNORE INTO blocks (hash, size, refcount) VALUES (?, ?, 1)");
@@ -154,7 +186,8 @@ int JanusFS::write(const char* path, const char* buf, size_t size, off_t offset,
         }
 
         auto sizeStmt = db.prepareStatement("UPDATE inodes SET size = ?, mtime = strftime('%s','now') WHERE id = ?");
-        sqlite3_bind_int(sizeStmt.get(), 1, size);
+        sqlite3_bind_int(sizeStmt.get(), 1,
+                 static_cast<int>(data.size()));
         sqlite3_bind_int(sizeStmt.get(), 2, inode_id);
         
         if (sqlite3_step(sizeStmt.get()) != SQLITE_DONE) {
