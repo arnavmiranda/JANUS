@@ -91,6 +91,21 @@ private:
         const std::vector<uint8_t>& data,
         BlockStore& cas);
 
+    //refcounting
+    void insertBlockMetadata(
+        const std::string& hash,
+        size_t size);
+
+    void incrementRefcount(
+        const std::string& hash);
+
+    bool decrementRefcount(
+        const std::string& hash);
+
+    void deleteBlockMetadata(
+        const std::string& hash);
+
+
     // .janusignore helpers
     std::vector<std::string> getIgnoreList(BlockStore& cas);
     bool isIgnored(const std::string& filename, const std::vector<std::string>& ignoreList);

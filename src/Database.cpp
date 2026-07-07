@@ -352,6 +352,134 @@ void Database::unlinkFile(
     }
 }
 
+
+void Database::insertBlockMetadata(
+    const std::string& hash,
+    size_t size)
+{
+    auto stmt = prepareStatement(
+        "INSERT OR IGNORE INTO blocks "
+        "(hash, size, refcount) "
+        "VALUES (?, ?, 0)");
+
+    sqlite3_bind_text(
+        stmt.get(),
+        1,
+        hash.c_str(),
+        -1,
+        SQLITE_STATIC);
+
+    sqlite3_bind_int(
+        stmt.get(),
+        2,
+        static_cast<int>(size));
+
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE)
+    {
+        throw std::runtime_error(
+            "Failed to insert block metadata: " +
+            std::string(sqlite3_errmsg(db.get())));
+    }
+}
+
+void Database::incrementRefcount(
+    const std::string& hash)
+{
+    auto stmt = prepareStatement(
+        "UPDATE blocks "
+        "SET refcount = refcount + 1 "
+        "WHERE hash = ?");
+
+    sqlite3_bind_text(
+        stmt.get(),
+        1,
+        hash.c_str(),
+        -1,
+        SQLITE_STATIC);
+
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE)
+    {
+        throw std::runtime_error(
+            "Failed to increment refcount: " +
+            std::string(sqlite3_errmsg(db.get())));
+    }
+
+    if (sqlite3_changes(db.get()) != 1)
+    {
+        throw std::runtime_error(
+            "incrementRefcount(): block metadata missing.");
+    }
+}
+
+
+bool Database::decrementRefcount(
+    const std::string& hash)
+{
+    auto stmt = prepareStatement(
+        "UPDATE blocks "
+        "SET refcount = refcount - 1 "
+        "WHERE hash = ?");
+
+    sqlite3_bind_text(
+        stmt.get(),
+        1,
+        hash.c_str(),
+        -1,
+        SQLITE_STATIC);
+
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE)
+    {
+        throw std::runtime_error(
+            "Failed to decrement refcount: " +
+            std::string(sqlite3_errmsg(db.get())));
+    }
+
+    auto query = prepareStatement(
+        "SELECT refcount "
+        "FROM blocks "
+        "WHERE hash = ?");
+
+    sqlite3_bind_text(
+        query.get(),
+        1,
+        hash.c_str(),
+        -1,
+        SQLITE_STATIC);
+
+    if (sqlite3_step(query.get()) != SQLITE_ROW)
+    {
+        throw std::runtime_error(
+            "Failed to query refcount.");
+    }
+
+    return sqlite3_column_int(query.get(), 0) == 0;
+}
+
+
+void Database::deleteBlockMetadata(
+    const std::string& hash)
+{
+    auto stmt = prepareStatement(
+        "DELETE FROM blocks "
+        "WHERE hash = ?");
+
+    sqlite3_bind_text(
+        stmt.get(),
+        1,
+        hash.c_str(),
+        -1,
+        SQLITE_STATIC);
+
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE)
+    {
+        throw std::runtime_error(
+            "Failed to delete block metadata: " +
+            std::string(sqlite3_errmsg(db.get())));
+    }
+}
+
+
+
 // ---------------------------------------------------------------------------
 // .janusignore helpers
 // ---------------------------------------------------------------------------

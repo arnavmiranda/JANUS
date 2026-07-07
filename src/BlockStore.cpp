@@ -98,3 +98,20 @@ std::vector<uint8_t> BlockStore::readBlock(const std::string& hash) {
 
     return buffer;
 }
+
+void BlockStore::deleteBlock(const std::string& hash)
+{
+    std::filesystem::path target = blocks_dir / hash;
+
+    std::error_code ec;
+    std::filesystem::remove(target, ec);
+
+    if (ec)
+    {
+        throw std::runtime_error(
+            "Failed to delete CAS block: " +
+            hash +
+            " : " +
+            ec.message());
+    }
+}

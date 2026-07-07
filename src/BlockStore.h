@@ -24,6 +24,7 @@ public:
 
     std::string writeBlock(const std::vector<uint8_t>& data);
     std::vector<uint8_t> readBlock(const std::string& hash);
+    void deleteBlock(const std::string& hash);
 
 private:
     std::filesystem::path blocks_dir;
