@@ -277,9 +277,7 @@ void Database::replaceFileMappings(
     }
 }
 
-std::vector<uint8_t> Database::loadFileContents(
-    int inodeId,
-    BlockStore& cas)
+std::vector<uint8_t> Database::loadFileContents(int inodeId, BlockStore& cas)
 {
     FileLayout layout = getCurrentFileLayout(inodeId);
     std::vector<uint8_t> result;
@@ -287,11 +285,7 @@ std::vector<uint8_t> Database::loadFileContents(
     for (const auto& hash : layout.blockHashes)
     {
         auto block = cas.readBlock(hash);
-
-        result.insert(
-            result.end(),
-            block.begin(),
-            block.end());
+        result.insert( result.end(), block.begin(), block.end());
     }
 
     result.resize(layout.logicalSize);
