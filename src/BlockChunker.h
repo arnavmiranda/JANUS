@@ -6,6 +6,8 @@
 struct FileBlock
 {
     std::vector<uint8_t> bytes;
+
+    size_t logicalOffset = 0;
 };
 
 class BlockChunker

@@ -317,7 +317,6 @@ FileLayout Database::storeFileContents(const std::vector<uint8_t>& data, BlockSt
 void Database::commitFileContents( int inodeId, const std::vector<uint8_t>& data, BlockStore& cas) {
     
         FileLayout newLayout = storeFileContents(data, cas);
-
         const auto oldLayout = getCurrentFileLayout(inodeId);
 
         auto blocks = BlockChunker::split(data);
