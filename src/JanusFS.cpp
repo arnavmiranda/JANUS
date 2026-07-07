@@ -21,7 +21,7 @@ int JanusFS::getattr(const char* path, struct stat* stbuf, struct fuse_file_info
     std::string filename = path + 1; // Strip leading slash
 
     try {
-        auto stmt = repository.metadata().prepareStatement("SELECT mode, size, mtime FROM inodes WHERE filename = ?");
+        auto stmt = repository.prepareStatement("SELECT mode, size, mtime FROM inodes WHERE filename = ?");
         sqlite3_bind_text(stmt.get(), 1, filename.c_str(), -1, SQLITE_STATIC);
 
         int rc = sqlite3_step(stmt.get());
@@ -56,7 +56,7 @@ int JanusFS::readdir(const char* path, void* buf, fuse_fill_dir_t filler, off_t 
     filler(buf, "..", NULL, 0, static_cast<fuse_fill_dir_flags>(0));
 
     try {
-        auto stmt = repository.metadata().prepareStatement("SELECT filename FROM inodes");
+        auto stmt = repository.prepareStatement("SELECT filename FROM inodes");
         int rc;
         while ((rc = sqlite3_step(stmt.get())) == SQLITE_ROW) {
             const char* name = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 0));
@@ -79,8 +79,8 @@ int JanusFS::create(const char* path, mode_t mode, struct fuse_file_info* fi) {
     std::string filename = path + 1;
 
     try {
-        repository.metadata().beginTransaction();
-        auto stmt = repository.metadata().prepareStatement("INSERT INTO inodes (filename, mode, size, mtime) VALUES (?, ?, 0, strftime('%s','now'))");
+        repository.beginTransaction();
+        auto stmt = repository.prepareStatement("INSERT INTO inodes (filename, mode, size, mtime) VALUES (?, ?, 0, strftime('%s','now'))");
         sqlite3_bind_text(stmt.get(), 1, filename.c_str(), -1, SQLITE_STATIC);
         
         mode_t final_mode = S_IFREG | (mode & 0777);
@@ -94,10 +94,10 @@ int JanusFS::create(const char* path, mode_t mode, struct fuse_file_info* fi) {
             const char* err = sqlite3_errmsg(sqlite3_db_handle(stmt.get()));
             throw std::runtime_error(std::string("INSERT INTO inodes failed: ") + err);
         }
-        repository.metadata().commitTransaction();
+        repository.commitTransaction();
     } catch (const std::exception& e) {
         std::cerr << "\n[FUSE FATAL ERROR in " << __func__ << "]: " << e.what() << "\n\n";
-        try { repository.metadata().rollbackTransaction(); } catch(...) {}
+        try { repository.rollbackTransaction(); } catch(...) {}
         return -EIO;
     }
 
@@ -112,12 +112,11 @@ int JanusFS::write(const char* path, const char* buf, size_t size, off_t offset,
 
     try
     {
-        repository.metadata().writeFile(
+        repository.write(
             filename,
             buf,
             size,
-            offset,
-            repository.objectStore());
+            offset);
 
         return static_cast<int>(size);
     }
@@ -149,10 +148,7 @@ int JanusFS::read(const char* path, char* buf, size_t size, off_t offset, struct
 
     try
     {
-        auto data =
-            repository.metadata().readFile(
-                filename,
-                repository.objectStore());
+        auto data = repository.read(filename);
 
         if (offset >= static_cast<off_t>(data.size()))
             return 0;
@@ -198,9 +194,7 @@ int JanusFS::unlink(const char* path)
 
     try
     {
-        repository.metadata().unlinkFile(
-            filename,
-            repository.objectStore());
+        repository.unlink(filename);
 
         return 0;
     }
@@ -233,11 +227,7 @@ int JanusFS::truncate(const char *path, off_t size, struct fuse_file_info *fi)
 
     try
     {
-        repository.metadata().truncateFile(
-            filename,
-            static_cast<size_t>(size),
-            repository.objectStore());
-
+        repository.truncate(filename, static_cast<size_t>(size));
         return 0;
     }
     catch (const std::runtime_error& e)
