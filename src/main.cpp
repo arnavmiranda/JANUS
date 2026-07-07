@@ -4,7 +4,7 @@
 #include <filesystem>
 #include <vector>
 #include <string>
-#include "JanusFS.h"
+#include "../include/JanusFS.h"
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {

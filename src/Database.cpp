@@ -1,7 +1,7 @@
-#include "Database.h"
-#include "BlockStore.h"
-#include "BlockChunker.h"
-#include "FileAssembler.h"
+#include "../include/Database.h"
+#include "../include/BlockStore.h"
+#include "../include/BlockChunker.h"
+#include "../include/FileAssembler.h"
 
 #include <sstream>
 #include <vector>

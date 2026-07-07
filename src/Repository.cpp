@@ -1,4 +1,4 @@
-#include "Repository.h"
+#include "../include/Repository.h"
 
 Repository::Repository(const std::string& repositoryRoot)
     : metadata_(repositoryRoot + "/janus_meta.db"),

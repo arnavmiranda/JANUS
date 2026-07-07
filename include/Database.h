@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../include/storage/FileLayout.h"
 #include <optional>
 #include <sqlite3.h>
 #include <string>
@@ -8,12 +9,6 @@
 #include <vector>
 #include <utility>
 
-struct FileLayout
-{
-    size_t logicalSize = 0;
-
-    std::vector<std::string> blockHashes;
-};
 
 struct SQLiteDeleter {
     void operator()(sqlite3* db) const {
