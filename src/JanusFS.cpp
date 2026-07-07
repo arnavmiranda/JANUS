@@ -104,166 +104,109 @@ int JanusFS::create(const char* path, mode_t mode, struct fuse_file_info* fi) {
     return 0;
 }
 
-int JanusFS::write(const char* path, const char* buf, size_t size, off_t offset, struct fuse_file_info* fi) {
-    (void) fi;
+int JanusFS::write(const char* path, const char* buf, size_t size, off_t offset, struct fuse_file_info* fi)
+{
+    (void)fi;
+
     std::string filename = path + 1;
 
-    try {
-        db.beginTransaction();
-        
-        auto getInodeStmt = db.prepareStatement("SELECT id FROM inodes WHERE filename = ?");
-        sqlite3_bind_text(getInodeStmt.get(), 1, filename.c_str(), -1, SQLITE_STATIC);
-        
-        int rc = sqlite3_step(getInodeStmt.get());
-        if (rc == SQLITE_DONE) {
-            db.rollbackTransaction();
-            return -ENOENT;
-        } else if (rc != SQLITE_ROW) {
-            const char* err = sqlite3_errmsg(sqlite3_db_handle(getInodeStmt.get()));
-            throw std::runtime_error(std::string("SELECT id FROM inodes failed: ") + err);
-        }
-        int inode_id = sqlite3_column_int(getInodeStmt.get(), 0);
-
-        // Load the current file contents (if any)
-        std::vector<uint8_t> data;
-
-        {
-            auto currentBlockStmt = db.prepareStatement(
-                "SELECT block_hash FROM file_blocks "
-                "WHERE inode_id = ? "
-                "ORDER BY block_index LIMIT 1");
-
-            sqlite3_bind_int(currentBlockStmt.get(), 1, inode_id);
-
-            int rc = sqlite3_step(currentBlockStmt.get());
-
-            if (rc == SQLITE_ROW) {
-                const char* oldHash =
-                    reinterpret_cast<const char*>(sqlite3_column_text(currentBlockStmt.get(), 0));
-
-                data = cas.readBlock(oldHash);
-            }
-        }
-
-        size_t requiredSize = static_cast<size_t>(offset) + size;
-
-        if (data.size() < requiredSize) {
-            data.resize(requiredSize, 0);
-        }
-
-        std::copy(
+    try
+    {
+        db.writeFile(
+            filename,
             buf,
-            buf + size,
-            data.begin() + offset
-        );
+            size,
+            offset,
+            cas);
 
-        std::string hash = cas.writeBlock(data);
+        return static_cast<int>(size);
+    }
+    catch (const std::runtime_error&)
+    {
+        return -ENOENT;
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "\n[FUSE FATAL ERROR in "
+                  << __func__
+                  << "]: "
+                  << e.what()
+                  << "\n\n";
 
-        auto blockStmt = db.prepareStatement("INSERT OR IGNORE INTO blocks (hash, size, refcount) VALUES (?, ?, 1)");
-        sqlite3_bind_text(blockStmt.get(), 1, hash.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_int(blockStmt.get(), 2, size);
-        
-        if (sqlite3_step(blockStmt.get()) != SQLITE_DONE) {
-            const char* err = sqlite3_errmsg(sqlite3_db_handle(blockStmt.get()));
-            throw std::runtime_error(std::string("INSERT INTO blocks failed: ") + err);
-        }
+        return -EIO;
+    }
+}
+int JanusFS::read(const char* path, char* buf, size_t size, off_t offset, struct fuse_file_info* fi)
+{
+    (void)fi;
 
-        auto cleanMappings = db.prepareStatement("DELETE FROM file_blocks WHERE inode_id = ?");
-        sqlite3_bind_int(cleanMappings.get(), 1, inode_id);
-        
-        if (sqlite3_step(cleanMappings.get()) != SQLITE_DONE) {
-            const char* err = sqlite3_errmsg(sqlite3_db_handle(cleanMappings.get()));
-            throw std::runtime_error(std::string("DELETE FROM file_blocks failed: ") + err);
-        }
+    std::string filename = path + 1;
 
-        auto mappingStmt = db.prepareStatement("INSERT INTO file_blocks (inode_id, block_index, block_hash) VALUES (?, 0, ?)");
-        sqlite3_bind_int(mappingStmt.get(), 1, inode_id);
-        sqlite3_bind_text(mappingStmt.get(), 2, hash.c_str(), -1, SQLITE_STATIC);
-        
-        if (sqlite3_step(mappingStmt.get()) != SQLITE_DONE) {
-            const char* err = sqlite3_errmsg(sqlite3_db_handle(mappingStmt.get()));
-            throw std::runtime_error(std::string("INSERT INTO file_blocks failed: ") + err);
-        }
+    try
+    {
+        auto data =
+            db.readFile(
+                filename,
+                cas);
 
-        auto sizeStmt = db.prepareStatement("UPDATE inodes SET size = ?, mtime = strftime('%s','now') WHERE id = ?");
-        sqlite3_bind_int(sizeStmt.get(), 1,
-                 static_cast<int>(data.size()));
-        sqlite3_bind_int(sizeStmt.get(), 2, inode_id);
-        
-        if (sqlite3_step(sizeStmt.get()) != SQLITE_DONE) {
-            const char* err = sqlite3_errmsg(sqlite3_db_handle(sizeStmt.get()));
-            throw std::runtime_error(std::string("UPDATE inodes failed: ") + err);
-        }
+        if (offset >= static_cast<off_t>(data.size()))
+            return 0;
 
-        db.commitTransaction();
-        return size;
+        size_t bytesToRead =
+            std::min(
+                size,
+                data.size() -
+                static_cast<size_t>(offset));
 
-    } catch (const std::exception& e) {
-        std::cerr << "\n[FUSE FATAL ERROR in " << __func__ << "]: " << e.what() << "\n\n";
-        try { db.rollbackTransaction(); } catch(...) {}
+        memcpy(
+            buf,
+            data.data() + offset,
+            bytesToRead);
+
+        return static_cast<int>(bytesToRead);
+    }
+    catch (const std::runtime_error&)
+    {
+        return -ENOENT;
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr
+            << "\n[FUSE FATAL ERROR in "
+            << __func__
+            << "]: "
+            << e.what()
+            << "\n\n";
+
         return -EIO;
     }
 }
 
-int JanusFS::read(const char* path, char* buf, size_t size, off_t offset, struct fuse_file_info* fi) {
-    (void) fi;
+int JanusFS::unlink(const char* path)
+{
     std::string filename = path + 1;
 
-    try {
-        auto getInodeStmt = db.prepareStatement("SELECT id FROM inodes WHERE filename = ?");
-        sqlite3_bind_text(getInodeStmt.get(), 1, filename.c_str(), -1, SQLITE_STATIC);
-        
-        int rc = sqlite3_step(getInodeStmt.get());
-        if (rc == SQLITE_DONE) {
-            return -ENOENT;
-        } else if (rc != SQLITE_ROW) {
-            const char* err = sqlite3_errmsg(sqlite3_db_handle(getInodeStmt.get()));
-            throw std::runtime_error(std::string("SELECT id FROM inodes failed: ") + err);
-        }
-        int inode_id = sqlite3_column_int(getInodeStmt.get(), 0);
+    try
+    {
+        db.unlinkFile(
+            filename,
+            cas);
 
-        auto mappingStmt = db.prepareStatement("SELECT block_hash FROM file_blocks WHERE inode_id = ? LIMIT 1");
-        sqlite3_bind_int(mappingStmt.get(), 1, inode_id);
-
-        int rc_map = sqlite3_step(mappingStmt.get());
-        if (rc_map == SQLITE_DONE) {
-            return 0; // Empty file
-        } else if (rc_map != SQLITE_ROW) {
-            const char* err = sqlite3_errmsg(sqlite3_db_handle(mappingStmt.get()));
-            throw std::runtime_error(std::string("SELECT block_hash FROM file_blocks failed: ") + err);
-        }
-        
-        const char* hash_cstr = reinterpret_cast<const char*>(sqlite3_column_text(mappingStmt.get(), 0));
-        std::string hash(hash_cstr);
-
-        std::vector<uint8_t> data = cas.readBlock(hash);
-        
-        if (offset < data.size()) {
-            if (offset + size > data.size()) {
-                size = data.size() - offset;
-            }
-            memcpy(buf, data.data() + offset, size);
-            return size;
-        } else {
-            return 0;
-        }
-
-    } catch (const std::exception& e) {
-        std::cerr << "\n[FUSE FATAL ERROR in " << __func__ << "]: " << e.what() << "\n\n";
-        return -EIO;
+        return 0;
     }
-}
+    catch (const std::runtime_error&)
+    {
+        return -ENOENT;
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr
+            << "\n[FUSE FATAL ERROR in "
+            << __func__
+            << "]: "
+            << e.what()
+            << "\n\n";
 
-int JanusFS::unlink(const char* path) {
-    std::string filename = path + 1;
-    try {
-        if (db.removeInode(filename)) {
-            return 0;
-        } else {
-            return -ENOENT;
-        }
-    } catch (const std::exception& e) {
-        std::cerr << "\n[FUSE FATAL ERROR in " << __func__ << "]: " << e.what() << "\n\n";
         return -EIO;
     }
 }

@@ -255,6 +255,103 @@ void Database::replaceFileMappings(
     }
 }
 
+std::vector<uint8_t> Database::loadFileContents(
+    int inodeId,
+    BlockStore& cas)
+{
+    auto blockHashes = getCurrentBlockHashes(inodeId);
+
+    if (blockHashes.empty())
+    {
+        return {};
+    }
+
+    //
+    // Current implementation:
+    // one block == one file.
+    //
+    return cas.readBlock(blockHashes.front());
+}
+
+std::vector<std::string> Database::storeFileContents(
+    const std::vector<uint8_t>& data,
+    BlockStore& cas)
+{
+    return { cas.writeBlock(data) };
+}
+
+void Database::writeFile(
+    const std::string& filename,
+    const char* buffer,
+    size_t size,
+    off_t offset,
+    BlockStore& cas)
+{
+    beginTransaction();
+
+    try
+    {
+        int inodeId = getInodeId(filename);
+
+        std::vector<uint8_t> data =
+            loadFileContents(inodeId, cas);
+
+        size_t requiredSize =
+            static_cast<size_t>(offset) + size;
+
+        if (data.size() < requiredSize)
+        {
+            data.resize(requiredSize, 0);
+        }
+
+        std::copy(
+            buffer,
+            buffer + size,
+            data.begin() + offset);
+
+        auto newBlocks =
+            storeFileContents(data, cas);
+
+        replaceFileMappings(
+            inodeId,
+            newBlocks);
+
+        updateInodeMetadata(
+            inodeId,
+            data.size());
+
+        commitTransaction();
+    }
+    catch (...)
+    {
+        rollbackTransaction();
+        throw;
+    }
+}
+
+std::vector<uint8_t> Database::readFile(
+    const std::string& filename,
+    BlockStore& cas)
+{
+    int inodeId = getInodeId(filename);
+
+    return loadFileContents(
+        inodeId,
+        cas);
+}
+void Database::unlinkFile(
+    const std::string& filename,
+    BlockStore& cas)
+{
+    (void)cas;
+
+    if (!removeInode(filename))
+    {
+        throw std::runtime_error(
+            "File does not exist.");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // .janusignore helpers
 // ---------------------------------------------------------------------------

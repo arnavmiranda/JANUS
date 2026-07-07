@@ -75,13 +75,21 @@ private:
 
     std::vector<std::string> getCurrentBlockHashes(int inodeId);
 
-    void Database::replaceFileMappings(
+    void replaceFileMappings(
         int inodeId,
         const std::vector<std::string>& newBlockHashes);
 
     void updateInodeMetadata(
         int inodeId,
         size_t newSize);
+
+    std::vector<uint8_t> loadFileContents(
+        int inodeId,
+        BlockStore& cas);
+
+    std::vector<std::string> storeFileContents(
+        const std::vector<uint8_t>& data,
+        BlockStore& cas);
 
     // .janusignore helpers
     std::vector<std::string> getIgnoreList(BlockStore& cas);
