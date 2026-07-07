@@ -8,6 +8,13 @@
 #include <vector>
 #include <utility>
 
+struct FileLayout
+{
+    size_t logicalSize = 0;
+
+    std::vector<std::string> blockHashes;
+};
+
 struct SQLiteDeleter {
     void operator()(sqlite3* db) const {
         if (db) {
@@ -72,17 +79,18 @@ public:
         const std::string& filename,
         BlockStore& cas);
 
+        
 private:
     DatabasePtr db;
 
     //metadata
     int getInodeId(const std::string& filename);
 
-    std::vector<std::string> getCurrentBlockHashes(int inodeId);
+    FileLayout getCurrentFileLayout(int inodeId);
 
     void replaceFileMappings(
         int inodeId,
-        const std::vector<std::string>& newBlockHashes);
+        const FileLayout& layout);
 
     void updateInodeMetadata(
         int inodeId,
@@ -92,14 +100,14 @@ private:
         int inodeId,
         BlockStore& cas);
 
-    std::vector<std::string> storeFileContents(
+    FileLayout storeFileContents(
         const std::vector<uint8_t>& data,
         BlockStore& cas);
 
     //refcounting
     void insertBlockMetadata(
         const std::string& hash,
-        size_t size);
+        size_t blockSize);
 
     void incrementRefcount(
         const std::string& hash);

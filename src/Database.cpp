@@ -146,41 +146,62 @@ int Database::getInodeId(const std::string& filename)
         "Failed to lookup inode: " +
         std::string(sqlite3_errmsg(db.get())));
 }
-
-std::vector<std::string> Database::getCurrentBlockHashes(int inodeId)
+FileLayout Database::getCurrentFileLayout(int inodeId)
 {
-    std::vector<std::string> hashes;
+    FileLayout layout;
 
-    auto stmt = prepareStatement(
-        "SELECT block_hash "
-        "FROM file_blocks "
-        "WHERE inode_id = ? "
-        "ORDER BY block_index");
-
-    sqlite3_bind_int(stmt.get(), 1, inodeId);
-
-    while (true)
+    //
+    // Load logical size from inode metadata.
+    //
     {
-        int rc = sqlite3_step(stmt.get());
+        auto stmt = prepareStatement(
+            "SELECT size "
+            "FROM inodes "
+            "WHERE id = ?");
 
-        if (rc == SQLITE_DONE)
-            break;
+        sqlite3_bind_int(stmt.get(), 1, inodeId);
 
-        if (rc != SQLITE_ROW)
+        if (sqlite3_step(stmt.get()) != SQLITE_ROW)
         {
             throw std::runtime_error(
-                "Failed to lookup block mappings: " +
-                std::string(sqlite3_errmsg(db.get())));
+                "Failed to lookup inode size.");
         }
 
-        hashes.emplace_back(
-            reinterpret_cast<const char*>(
-                sqlite3_column_text(stmt.get(), 0)));
+        layout.logicalSize =
+            static_cast<size_t>(
+                sqlite3_column_int64(stmt.get(), 0));
+    }
+    {
+        auto stmt = prepareStatement(
+            "SELECT block_hash "
+            "FROM file_blocks "
+            "WHERE inode_id = ? "
+            "ORDER BY block_index");
+
+        sqlite3_bind_int(stmt.get(), 1, inodeId);
+
+        while (true)
+        {
+            int rc = sqlite3_step(stmt.get());
+
+            if (rc == SQLITE_DONE)
+                break;
+
+            if (rc != SQLITE_ROW)
+            {
+                throw std::runtime_error(
+                    "Failed to lookup block mappings: " +
+                    std::string(sqlite3_errmsg(db.get())));
+            }
+
+            layout.blockHashes.emplace_back(
+                reinterpret_cast<const char*>(
+                    sqlite3_column_text(stmt.get(), 0)));
+        }
     }
 
-    return hashes;
+    return layout;
 }
-
 void Database::updateInodeMetadata(
     int inodeId,
     size_t newSize)
@@ -210,7 +231,7 @@ void Database::updateInodeMetadata(
 }
 void Database::replaceFileMappings(
     int inodeId,
-    const std::vector<std::string>& newBlockHashes)
+    const FileLayout& layout)
 {
     // Remove existing mappings.
     {
@@ -229,7 +250,7 @@ void Database::replaceFileMappings(
     }
 
     // Insert replacement mappings.
-    for (size_t i = 0; i < newBlockHashes.size(); ++i)
+    for (size_t i = 0; i < layout.blockHashes.size(); ++i)
     {
         auto stmt = prepareStatement(
             "INSERT INTO file_blocks "
@@ -242,7 +263,7 @@ void Database::replaceFileMappings(
         sqlite3_bind_text(
             stmt.get(),
             3,
-            newBlockHashes[i].c_str(),
+            layout.blockHashes[i].c_str(),
             -1,
             SQLITE_STATIC);
 
@@ -259,38 +280,47 @@ std::vector<uint8_t> Database::loadFileContents(
     int inodeId,
     BlockStore& cas)
 {
-    auto blockHashes = getCurrentBlockHashes(inodeId);
+    FileLayout layout = getCurrentFileLayout(inodeId);
+    std::vector<uint8_t> result;
 
-    if (blockHashes.empty())
+    for (const auto& hash : layout.blockHashes)
     {
-        return {};
+        auto block = cas.readBlock(hash);
+
+        result.insert(
+            result.end(),
+            block.begin(),
+            block.end());
     }
 
-    //
-    // Current implementation:
-    // one block == one file.
-    //
-    return cas.readBlock(blockHashes.front());
+    result.resize(layout.logicalSize);
+
+    return result;
 }
 
-std::vector<std::string> Database::storeFileContents(
+FileLayout Database::storeFileContents(
     const std::vector<uint8_t>& data,
     BlockStore& cas)
 {
-    return { cas.writeBlock(data) };
+    FileLayout layout;
+    layout.logicalSize = data.size();
+    layout.blockHashes.push_back(cas.writeBlock(data));
+    
+    return layout;
 }
 
 void Database::commitFileContents( int inodeId, const std::vector<uint8_t>& data, BlockStore& cas) {
-    auto newBlocks = storeFileContents(data, cas);
+    
+        FileLayout newLayout = storeFileContents(data, cas);
 
-        const auto oldBlocks = getCurrentBlockHashes(inodeId);
+        const auto oldLayout = getCurrentFileLayout(inodeId);
 
         // Acquire ownership.
-        for (const auto& hash : newBlocks)
+        for (const auto& hash : newLayout.blockHashes)
         {
             insertBlockMetadata(
                 hash,
-                data.size());
+                data.size());  // currently one block == whole file
 
             incrementRefcount(hash);
         }
@@ -298,13 +328,13 @@ void Database::commitFileContents( int inodeId, const std::vector<uint8_t>& data
         // Update inode → block mapping.
         replaceFileMappings(
             inodeId,
-            newBlocks);
+            newLayout);
 
         // Release ownership.
 
         std::vector<std::string> blocksToDelete;
 
-        for (const auto& hash : oldBlocks)
+        for (const auto& hash : oldLayout.blockHashes)
         {
             if (decrementRefcount(hash))
             {
@@ -384,8 +414,8 @@ void Database::unlinkFile(
         //
         // Remember which blocks this file owns.
         //
-        auto oldBlocks =
-            getCurrentBlockHashes(inodeId);
+        auto oldLayout =
+            getCurrentFileLayout(inodeId);
 
         //
         // Remove mappings.
@@ -430,7 +460,7 @@ void Database::unlinkFile(
         //
         // Release ownership.
         //
-        for (const auto& hash : oldBlocks)
+        for (const auto& hash : oldLayout.blockHashes)
         {
             if (decrementRefcount(hash))
             {
@@ -461,10 +491,9 @@ void Database::unlinkFile(
     }
 }
 
-
 void Database::insertBlockMetadata(
     const std::string& hash,
-    size_t size)
+    size_t blockSize)
 {
     auto stmt = prepareStatement(
         "INSERT OR IGNORE INTO blocks "
@@ -481,7 +510,7 @@ void Database::insertBlockMetadata(
     sqlite3_bind_int(
         stmt.get(),
         2,
-        static_cast<int>(size));
+        static_cast<int>(blockSize));
 
     if (sqlite3_step(stmt.get()) != SQLITE_DONE)
     {
@@ -1113,105 +1142,3 @@ void Database::diffSnapshots(BlockStore& cas, const std::string& hash1, const st
         }
     }
 }
-
-
-// int Database::write(const char* path, const char* buf, size_t size, off_t offset, struct fuse_file_info* fi) {
-//     (void) fi;
-//     std::string filename = path + 1;
-
-//     try {
-//         db.beginTransaction();
-        
-//         auto getInodeStmt = db.prepareStatement("SELECT id FROM inodes WHERE filename = ?");
-//         sqlite3_bind_text(getInodeStmt.get(), 1, filename.c_str(), -1, SQLITE_STATIC);
-        
-//         int rc = sqlite3_step(getInodeStmt.get());
-//         if (rc == SQLITE_DONE) {
-//             db.rollbackTransaction();
-//             return -ENOENT;
-//         } else if (rc != SQLITE_ROW) {
-//             const char* err = sqlite3_errmsg(sqlite3_db_handle(getInodeStmt.get()));
-//             throw std::runtime_error(std::string("SELECT id FROM inodes failed: ") + err);
-//         }
-//         int inode_id = sqlite3_column_int(getInodeStmt.get(), 0);
-
-//         // Load the current file contents (if any)
-//         std::vector<uint8_t> data;
-
-//         {
-//             auto currentBlockStmt = db.prepareStatement(
-//                 "SELECT block_hash FROM file_blocks "
-//                 "WHERE inode_id = ? "
-//                 "ORDER BY block_index LIMIT 1");
-
-//             sqlite3_bind_int(currentBlockStmt.get(), 1, inode_id);
-
-//             int rc = sqlite3_step(currentBlockStmt.get());
-
-//             if (rc == SQLITE_ROW) {
-//                 const char* oldHash =
-//                     reinterpret_cast<const char*>(sqlite3_column_text(currentBlockStmt.get(), 0));
-
-//                 data = cas.readBlock(oldHash);
-//             }
-//         }
-
-//         size_t requiredSize = static_cast<size_t>(offset) + size;
-
-//         if (data.size() < requiredSize) {
-//             data.resize(requiredSize, 0);
-//         }
-
-//         std::copy(
-//             buf,
-//             buf + size,
-//             data.begin() + offset
-//         );
-
-//         std::string hash = cas.writeBlock(data);
-
-//         auto blockStmt = db.prepareStatement("INSERT OR IGNORE INTO blocks (hash, size, refcount) VALUES (?, ?, 1)");
-//         sqlite3_bind_text(blockStmt.get(), 1, hash.c_str(), -1, SQLITE_STATIC);
-//         sqlite3_bind_int(blockStmt.get(), 2, size);
-        
-//         if (sqlite3_step(blockStmt.get()) != SQLITE_DONE) {
-//             const char* err = sqlite3_errmsg(sqlite3_db_handle(blockStmt.get()));
-//             throw std::runtime_error(std::string("INSERT INTO blocks failed: ") + err);
-//         }
-
-//         auto cleanMappings = db.prepareStatement("DELETE FROM file_blocks WHERE inode_id = ?");
-//         sqlite3_bind_int(cleanMappings.get(), 1, inode_id);
-        
-//         if (sqlite3_step(cleanMappings.get()) != SQLITE_DONE) {
-//             const char* err = sqlite3_errmsg(sqlite3_db_handle(cleanMappings.get()));
-//             throw std::runtime_error(std::string("DELETE FROM file_blocks failed: ") + err);
-//         }
-
-//         auto mappingStmt = db.prepareStatement("INSERT INTO file_blocks (inode_id, block_index, block_hash) VALUES (?, 0, ?)");
-//         sqlite3_bind_int(mappingStmt.get(), 1, inode_id);
-//         sqlite3_bind_text(mappingStmt.get(), 2, hash.c_str(), -1, SQLITE_STATIC);
-        
-//         if (sqlite3_step(mappingStmt.get()) != SQLITE_DONE) {
-//             const char* err = sqlite3_errmsg(sqlite3_db_handle(mappingStmt.get()));
-//             throw std::runtime_error(std::string("INSERT INTO file_blocks failed: ") + err);
-//         }
-
-//         auto sizeStmt = db.prepareStatement("UPDATE inodes SET size = ?, mtime = strftime('%s','now') WHERE id = ?");
-//         sqlite3_bind_int(sizeStmt.get(), 1,
-//                  static_cast<int>(data.size()));
-//         sqlite3_bind_int(sizeStmt.get(), 2, inode_id);
-        
-//         if (sqlite3_step(sizeStmt.get()) != SQLITE_DONE) {
-//             const char* err = sqlite3_errmsg(sqlite3_db_handle(sizeStmt.get()));
-//             throw std::runtime_error(std::string("UPDATE inodes failed: ") + err);
-//         }
-
-//         db.commitTransaction();
-//         return size;
-
-//     } catch (const std::exception& e) {
-//         std::cerr << "\n[FUSE FATAL ERROR in " << __func__ << "]: " << e.what() << "\n\n";
-//         try { db.rollbackTransaction(); } catch(...) {}
-//         return -EIO;
-//     }
-// }
