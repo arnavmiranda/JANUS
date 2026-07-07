@@ -1,24 +1,18 @@
 #include "Repository.h"
 
-#include "Database.h"
-#include "BlockStore.h"
-
-#include <filesystem>
-
-Repository::Repository(const std::string& root)
-    : root_(root)
+Repository::Repository(const std::string& repositoryRoot)
+    : metadata_(repositoryRoot + "/janus_meta.db"),
+      objectStore_(repositoryRoot)
 {
-    std::filesystem::create_directories(root_);
-
-    database_ =
-        std::make_unique<Database>(
-            root_ + "/janus.db");
-
-    blockStore_ =
-        std::make_unique<BlockStore>(
-            root_ + "/objects");
-
-    database_->initSchema();
+    metadata_.initSchema();
 }
 
-Repository::~Repository() = default;
+Database& Repository::metadata()
+{
+    return metadata_;
+}
+
+BlockStore& Repository::objectStore()
+{
+    return objectStore_;
+}

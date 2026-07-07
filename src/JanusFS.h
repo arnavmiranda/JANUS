@@ -4,12 +4,11 @@
 #define FUSE_USE_VERSION 31
 #include <fuse.h>
 #include <string>
-#include "Database.h"
-#include "BlockStore.h"
+#include "Repository.h"
 
 class JanusFS {
 public:
-    JanusFS(Database& db, BlockStore& cas);
+    explicit JanusFS(Repository& repository);
     ~JanusFS();
 
     int getattr(const char* path, struct stat* stbuf, struct fuse_file_info* fi);
@@ -29,8 +28,7 @@ public:
     static int wrap_truncate(const char *path, off_t size, struct fuse_file_info *fi);
 
 private:
-    Database& db;
-    BlockStore& cas;
+    Repository& repository;
 };
 
 #endif // JANUSFS_H

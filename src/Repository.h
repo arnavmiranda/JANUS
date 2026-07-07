@@ -1,24 +1,24 @@
 #pragma once
 
-#include <memory>
-#include <string>
+#include "Database.h"
+#include "BlockStore.h"
 
-class Database;
-class BlockStore;
+#include <string>
 
 class Repository
 {
 public:
 
-    explicit Repository(const std::string& root);
+    explicit Repository(const std::string& repositoryRoot);
 
-    ~Repository();
+    ~Repository() = default;
+
+    Database& metadata();
+    BlockStore& objectStore();
 
 private:
 
-    std::unique_ptr<Database> database_;
+    Database metadata_;
 
-    std::unique_ptr<BlockStore> blockStore_;
-
-    std::string root_;
+    BlockStore objectStore_;
 };

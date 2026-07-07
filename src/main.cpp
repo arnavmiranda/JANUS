@@ -26,8 +26,8 @@ int main(int argc, char* argv[]) {
     try {
         std::string absolute_path = std::filesystem::current_path().string();
         Database db(absolute_path + "/janus_meta.db");
-        db.initSchema();
-        BlockStore cas(absolute_path);
+        Repository repository(absolute_path);
+        
 
         if (command == "mount") {
             struct fuse_args args = FUSE_ARGS_INIT(0, NULL);
@@ -40,7 +40,7 @@ int main(int argc, char* argv[]) {
             std::cout << "[JANUS] SQLite Metadata Engine Initialized." << std::endl;
             std::cout << "[JANUS] CAS Block Storage Engine Initialized." << std::endl;
 
-            JanusFS fs(db, cas);
+            JanusFS fs(repository);
 
             struct fuse_operations janus_oper = {};
             janus_oper.getattr = JanusFS::wrap_getattr;
@@ -61,7 +61,7 @@ int main(int argc, char* argv[]) {
             if (argc >= 4 && std::string(argv[2]) == "-m") {
                 message = argv[3];
             }
-            std::string hash = db.commitSnapshot(cas, message);
+            std::string hash = repository.metadata().commitSnapshot(repository.objectStore(), message);
             std::cout << "Committed snapshot: " << hash << "\n";
             if (!message.empty()) {
                 std::cout << "Message: " << message << "\n";
@@ -69,7 +69,7 @@ int main(int argc, char* argv[]) {
             return 0;
 
         } else if (command == "log") {
-            auto history = db.getSnapshotHistory();
+            auto history = repository.metadata().getSnapshotHistory();
 
             if (history.empty()) {
                 std::cout << "\033[33mNo snapshots found. Run 'janus commit' to create one.\033[0m\n";
@@ -113,7 +113,7 @@ int main(int argc, char* argv[]) {
                 const std::string& target_hash = history[static_cast<std::size_t>(idx)].first;
                 std::cout << "\033[36mChecking out snapshot " << idx
                           << " (" << target_hash.substr(0, 12) << "...)\033[0m\n";
-                db.checkoutSnapshot(cas, target_hash);
+                repository.metadata().checkoutSnapshot(repository.objectStore(), target_hash);
                 std::cout << "\033[32m✔ Successfully restored snapshot [" << idx << "]\033[0m\n";
             } catch (const std::invalid_argument&) {
                 std::cerr << "\033[31mError: '" << input << "' is not a valid number or 'q'.\033[0m\n";
@@ -127,7 +127,7 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             std::string hash = argv[2];
-            db.checkoutSnapshot(cas, hash);
+            repository.metadata().checkoutSnapshot(repository.objectStore(), hash);
             std::cout << "Successfully checked out snapshot: " << hash << std::endl;
             return 0;
 
@@ -136,7 +136,7 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Usage: janus diff <hash1> <hash2>\n";
                 return 1;
             }
-            db.diffSnapshots(cas, argv[2], argv[3]);
+            repository.metadata().diffSnapshots(repository.objectStore(), argv[2], argv[3]);
             return 0;
 
         } else if (command == "stats") {
@@ -148,7 +148,7 @@ int main(int argc, char* argv[]) {
                     break;
                 }
             }
-            db.printStats(asJson);
+            repository.metadata().printStats(asJson);
             return 0;
 
         } else {
