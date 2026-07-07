@@ -121,9 +121,14 @@ int JanusFS::write(const char* path, const char* buf, size_t size, off_t offset,
 
         return static_cast<int>(size);
     }
-    catch (const std::runtime_error&)
+    catch (const std::runtime_error& e)
     {
-        return -ENOENT;
+        std::cerr
+            << "[RUNTIME] "
+            << e.what()
+            << std::endl;
+
+        return -EIO;
     }
     catch (const std::exception& e)
     {
@@ -165,9 +170,14 @@ int JanusFS::read(const char* path, char* buf, size_t size, off_t offset, struct
 
         return static_cast<int>(bytesToRead);
     }
-    catch (const std::runtime_error&)
+    catch (const std::runtime_error& e)
     {
-        return -ENOENT;
+        std::cerr
+            << "[RUNTIME] "
+            << e.what()
+            << std::endl;
+
+        return -EIO;
     }
     catch (const std::exception& e)
     {
@@ -194,9 +204,14 @@ int JanusFS::unlink(const char* path)
 
         return 0;
     }
-    catch (const std::runtime_error&)
+    catch (const std::runtime_error& e)
     {
-        return -ENOENT;
+        std::cerr
+            << "[RUNTIME] "
+            << e.what()
+            << std::endl;
+
+        return -EIO;
     }
     catch (const std::exception& e)
     {
@@ -207,6 +222,37 @@ int JanusFS::unlink(const char* path)
             << e.what()
             << "\n\n";
 
+        return -EIO;
+    }
+}
+int JanusFS::truncate(const char *path, off_t size, struct fuse_file_info *fi)
+{
+    (void) fi;
+
+    std::string filename = path + 1;
+
+    try
+    {
+        db.truncateFile(
+            filename,
+            static_cast<size_t>(size),
+            cas);
+
+        return 0;
+    }
+    catch (const std::runtime_error& e)
+    {
+        std::cerr
+            << "[RUNTIME] "
+            << e.what()
+            << std::endl;
+
+        return -EIO;
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr
+            << "\n[FUSE FATAL ERROR in " << __func__ << "]: " << e.what() << "\n\n";
         return -EIO;
     }
 }
@@ -241,3 +287,6 @@ int JanusFS::wrap_unlink(const char* path) {
     return get_instance()->unlink(path);
 }
 
+int JanusFS::wrap_truncate(const char *path, off_t size, struct fuse_file_info *fi) {
+    return get_instance()->truncate(path, size, fi);
+}

@@ -280,41 +280,10 @@ std::vector<std::string> Database::storeFileContents(
     return { cas.writeBlock(data) };
 }
 
-void Database::writeFile(
-    const std::string& filename,
-    const char* buffer,
-    size_t size,
-    off_t offset,
-    BlockStore& cas)
-{
-    beginTransaction();
+void Database::commitFileContents( int inodeId, const std::vector<uint8_t>& data, BlockStore& cas) {
+    auto newBlocks = storeFileContents(data, cas);
 
-    try
-    {
-        int inodeId = getInodeId(filename);
-
-        std::vector<uint8_t> data =
-            loadFileContents(inodeId, cas);
-
-        size_t requiredSize =
-            static_cast<size_t>(offset) + size;
-
-        if (data.size() < requiredSize)
-        {
-            data.resize(requiredSize, 0);
-        }
-
-        std::copy(
-            buffer,
-            buffer + size,
-            data.begin() + offset);
-
-        auto newBlocks =
-            storeFileContents(data, cas);
-
-        const auto oldBlocks =
-            getCurrentBlockHashes(
-                inodeId);
+        const auto oldBlocks = getCurrentBlockHashes(inodeId);
 
         // Acquire ownership.
         for (const auto& hash : newBlocks)
@@ -332,15 +301,6 @@ void Database::writeFile(
             newBlocks);
 
         // Release ownership.
-        for (const auto& hash : oldBlocks)
-        {
-            if (decrementRefcount(hash))
-            {
-                deleteBlockMetadata(hash);
-
-                cas.deleteBlock(hash);
-            }
-        }
 
         std::vector<std::string> blocksToDelete;
 
@@ -367,6 +327,28 @@ void Database::writeFile(
         {
             cas.deleteBlock(hash);
         }
+}
+
+void Database::writeFile(const std::string& filename, const char* buffer, size_t size, off_t offset, BlockStore& cas)
+{
+    beginTransaction();
+
+    try
+    {
+        int inodeId = getInodeId(filename);
+
+        std::vector<uint8_t> data = loadFileContents(inodeId, cas);
+
+        size_t requiredSize = static_cast<size_t>(offset) + size;
+
+        if (data.size() < requiredSize)
+        {
+            data.resize(requiredSize, 0);
+        }
+
+        std::copy(buffer, buffer + size, data.begin() + offset);
+
+        commitFileContents(inodeId, data, cas);
     }
     catch (...)
     {
@@ -539,8 +521,7 @@ void Database::incrementRefcount(
 }
 
 
-bool Database::decrementRefcount(
-    const std::string& hash)
+bool Database::decrementRefcount(const std::string& hash)
 {
     auto stmt = prepareStatement(
         "UPDATE blocks "
@@ -559,6 +540,11 @@ bool Database::decrementRefcount(
         throw std::runtime_error(
             "Failed to decrement refcount: " +
             std::string(sqlite3_errmsg(db.get())));
+    }
+    if (sqlite3_changes(db.get()) != 1)
+    {
+        throw std::runtime_error(
+            "decrementRefcount(): block metadata missing.");
     }
 
     auto query = prepareStatement(
@@ -669,6 +655,43 @@ void Database::verifyReferenceCounts()
     }
 }
 
+
+void Database::truncateFile(
+    const std::string& filename,
+    size_t newSize,
+    BlockStore& cas)
+{
+    beginTransaction();
+
+    try
+    {
+        int inodeId =
+            getInodeId(filename);
+
+        std::vector<uint8_t> data =
+            loadFileContents(
+                inodeId,
+                cas);
+
+        //
+        // POSIX semantics:
+        //
+        // Shrinking removes bytes.
+        // Growing appends zero bytes.
+        //
+        data.resize(newSize, 0);
+
+        commitFileContents(
+            inodeId,
+            data,
+            cas);
+    }
+    catch (...)
+    {
+        rollbackTransaction();
+        throw;
+    }
+}
 
 
 

@@ -49,6 +49,7 @@ int main(int argc, char* argv[]) {
             janus_oper.create = JanusFS::wrap_create;
             janus_oper.write = JanusFS::wrap_write;
             janus_oper.unlink = JanusFS::wrap_unlink;
+            janus_oper.truncate = JanusFS::wrap_truncate;
             
             std::cout << "[JANUS] FUSE Daemon Starting..." << std::endl;
             int ret = fuse_main(args.argc, args.argv, &janus_oper, &fs);

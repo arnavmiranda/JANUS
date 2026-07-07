@@ -49,9 +49,11 @@ public:
     std::vector<std::pair<std::string, std::string>> getSnapshotHistory();
     void printStats(bool asJson);
 
-
-    //internal consistency verifier that validates the integirty of the cas metadata after every ownership transition
-    //this is public so that we can later call this with writeFile, unlinkFile, checkout, tests, etc
+    void commitFileContents( int inodeId, const std::vector<uint8_t>& data, BlockStore& cas);
+    void truncateFile(const std::string &filename, size_t newSize, BlockStore &cas);
+    
+    // internal consistency verifier that validates the integirty of the cas metadata after every ownership transition
+    // this is public so that we can later call this with writeFile, unlinkFile, checkout, tests, etc
     void verifyReferenceCounts();
 
     // File operations (storage engine API)
