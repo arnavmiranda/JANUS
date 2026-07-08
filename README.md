@@ -1,192 +1,227 @@
-# JANUS: A Version-Controlled Content-Addressable Filesystem in Userspace
+# JANUS
 
-## Abstract
-
-**JANUS** is a custom user-space filesystem implemented in **C++17** that converges virtual filesystem (VFS) architecture, relational database theory, and cryptographic deduplication into a cohesive storage engine. By intercepting POSIX system calls via **FUSE (Filesystem in Userspace)**, JANUS abstracts traditional block-device storage, decoupling file metadata from payload data.
-
-Unlike traditional filesystems, JANUS features intrinsic **4KB block-level data deduplication**, **ACID-compliant metadata persistence**, **real-time garbage collection**, and **deterministic temporal version control** directly at the filesystem interface level.
+A userspace storage engine exploring content-addressable storage, snapshot-based versioning, and SQLite-backed metadata through FUSE.
 
 ---
 
-#  Key Capabilities
+## Overview
 
-### Block-Level Deduplication
+JANUS is an experimental userspace filesystem written in **modern C++17** using **FUSE3**.
 
-Files are sliced into **4096-byte chunks**. Each chunk is hashed using **SHA-256** and stored uniquely.
+Rather than implementing a traditional block-device filesystem, JANUS explores an alternative storage architecture where:
 
-> A 1GB file with a 1-byte modification consumes only an additional **4KB** of physical storage.
+- File metadata is persisted in **SQLite**
+- File contents are stored in a **SHA-256 content-addressable block store**
+- Filesystem snapshots are implemented through **immutable manifest serialization**
 
-### Time-Travel / Version Control
-
-- Native filesystem snapshots
-- Instant checkout of historical states
-- Git-like version control semantics integrated into the filesystem
-
-### Active Garbage Collection
-
-JANUS maintains strict SQLite reference counts on all CAS blocks.
-
-When files are:
-
-- modified
-- deleted
-- truncated
-
-orphaned blocks are automatically reclaimed.
-
-### Dynamic State Preservation (`.janusignore`)
-
-Ignored files are excluded from snapshots while remaining preserved across checkouts.
-
-Typical use cases include:
-
-- secrets
-- log files
-- runtime configuration
-
-### Interactive TUI
-
-Built-in terminal interfaces provide:
-
-- Snapshot history
-- Interactive checkout
-- Filesystem navigation
+The project serves as an exploration of filesystem architecture, storage engines, content-addressable storage, and snapshot-based version control rather than a fully POSIX-compliant filesystem.
 
 ---
 
-#  System Architecture
+## Goals
 
-JANUS consists of three primary subsystems.
+The primary objective of JANUS is to investigate how concepts from operating systems, databases, and version control can be combined into a modular storage engine.
 
-## 1. FUSE Intercept Layer (VFS)
+The project explores:
 
-Using **libfuse3**, JANUS intercepts kernel POSIX operations including:
+- FUSE-based userspace filesystems
+- SQLite as a metadata engine
+- SHA-256 content-addressable storage
+- Block-level deduplication
+- Snapshot serialization
+- Immutable storage
+- Layered storage architecture
+
+---
+
+## Architecture
+
+```text
+                POSIX Applications
+                       │
+                  FUSE Interface
+                       │
+                  JanusFS Layer
+                       │
+                  Repository
+           ┌───────────┴────────────┐
+           │                        │
+     SQLite Database         Storage Engine
+           │                        │
+      Metadata Tables       Chunker / Assembler
+                                    │
+                              Block Store (CAS)
+```
+
+---
+
+## Components
+
+### JanusFS
+
+Implements the FUSE interface and translates supported filesystem operations into repository calls.
+
+Currently implemented operations include:
 
 - `getattr`
 - `readdir`
+- `create`
 - `read`
 - `write`
-- `create`
-- `unlink`
 - `truncate`
+- `unlink`
 
-These operations are redirected into custom C++ handlers while exposing a fully POSIX-compliant filesystem interface.
+These operations provide a minimal working filesystem interface suitable for experimentation.
 
 ---
 
-## 2. Relational Metadata Engine (SQLite)
+### Repository
 
-Rather than implementing traditional inode trees, JANUS delegates metadata management to an embedded SQLite database (`janus_meta.db`).
+Acts as the coordination layer between the virtual filesystem, metadata database, and storage engine.
 
-### ACID Compliance
+Responsibilities include:
 
-SQLite operates in:
+- Transactional writes
+- File reconstruction
+- Snapshot management
+- Metadata updates
 
-- WAL mode
-- Foreign keys enabled
+---
 
-ensuring:
+### SQLite Metadata Engine
 
-- Atomicity
-- Consistency
-- Isolation
-- Durability
+File metadata is stored in SQLite operating in **WAL mode**.
 
-### Relational Mapping
+Metadata includes:
 
-Metadata stored includes:
-
-- POSIX permissions
-- Logical file size
+- Filenames
+- Permissions
+- Logical file sizes
 - Modification timestamps
-- File → CAS block mappings (`file_blocks`)
+- Block mappings
+
+SQLite transactions provide atomic metadata updates during filesystem operations.
 
 ---
 
-## 3. Content-Addressable Storage (CAS)
+### Storage Engine
 
-File payloads are never stored linearly.
+The storage engine converts files into layouts consisting of fixed-size blocks.
 
-During writes:
+Each layout records:
 
-1. `BlockChunker` splits data into **4096-byte blocks**
-2. Every block is hashed using **OpenSSL SHA-256**
-3. The hash becomes the filename inside:
+- Logical file size
+- Ordered block hashes
+- Block sizes
 
-```
-.janus/blocks/
-```
+The current implementation reconstructs and regenerates the complete layout during each write operation.
 
-If the block already exists:
-
-- physical write is skipped
-- deduplication occurs automatically
-
-During reads:
-
-`FileAssembler` reconstructs files dynamically from CAS blocks.
+This favors implementation simplicity over write performance.
 
 ---
 
-#  Version Control Mechanics
+### Content-Addressable Storage
 
-Version control is implemented directly inside the filesystem.
+Each block is hashed using **SHA-256**.
 
-## Commit
+Blocks are stored as immutable objects named by their hash.
 
-Taking a snapshot:
+Features include:
 
-- scans active files
-- ignores `.janusignore`
-- serializes filesystem state
-- hashes the resulting manifest
-- stores it as another CAS object
-- records metadata in the SQLite `snapshots` table
+- Automatic block deduplication
+- Immutable block storage
+- Atomic temporary-file + rename semantics for safe writes
 
 ---
 
-## Checkout
+### Snapshot System
 
-Restoring a snapshot performs:
+Snapshots capture the current logical filesystem state.
 
-1. Cache ignored files
-2. Destroy current metadata mappings
-3. Parse historical manifest
-4. Restore filesystem state
-5. Reinject ignored files
+Each snapshot contains:
 
-This preserves secrets, logs, and local runtime files.
+- Filenames
+- Permissions
+- Logical file sizes
+- Ordered block hashes
+
+Snapshots are serialized into immutable manifest objects stored inside the content-addressable storage layer.
+
+Supported commands include:
+
+- `commit`
+- `checkout`
+- `diff`
+- `log`
+
+The snapshot implementation is intentionally lightweight and should be viewed as filesystem checkpointing rather than a full Git-compatible version control system.
 
 ---
 
-## Diff
+## Current Limitations
 
-Two snapshot manifests are compared to identify:
+JANUS is intentionally a research project and does not currently implement the full POSIX filesystem interface.
 
-- Added files
-- Removed files
-- Modified files
+Current limitations include:
+
+- Flat namespace (no nested directories)
+- No `mkdir` / `rmdir` support
+- No `rename` support
+- No `chmod` or `utimens` handlers
+- No symbolic links or hard links
+- Coarse-grained global locking
+- Fixed-size chunking
+- Full-file reconstruction during writes
+- Snapshot garbage collection is not yet implemented
+
+These limitations are known and represent future development goals rather than design oversights.
 
 ---
 
-#  Prerequisites
+## Why SQLite?
 
-## Dependencies
+Rather than implementing a custom metadata storage engine, JANUS delegates metadata persistence to SQLite.
+
+Benefits include:
+
+- Transactional updates
+- Crash recovery through WAL
+- Relational metadata management
+- Simplified implementation
+
+This allows the project to focus on storage architecture rather than database internals.
+
+---
+
+## Why Content-Addressable Storage?
+
+Using immutable hash-addressed blocks naturally enables:
+
+- Transparent deduplication
+- Immutable storage
+- Deterministic snapshot serialization
+- Content verification
+
+The current implementation uses fixed-size **4 KB** blocks.
+
+Future work includes evaluating content-defined chunking techniques such as **FastCDC**.
+
+---
+
+## Building
+
+Install dependencies:
 
 ```bash
-sudo apt update
-sudo apt install -y \
+sudo apt install \
     build-essential \
     cmake \
     libfuse3-dev \
     libsqlite3-dev \
-    libssl-dev \
-    pkg-config
+    libssl-dev
 ```
 
----
-
-## Build
+Build the project:
 
 ```bash
 mkdir build
@@ -198,159 +233,59 @@ make
 
 ---
 
-#  Operational Lifecycle
+## Running
 
-JANUS requires two terminal sessions.
-
----
-
-## Terminal A — Mount Filesystem
+Mount the filesystem:
 
 ```bash
-mkdir -p /tmp/mt
 ./janus mount /tmp/mt
 ```
 
-The metadata engine and CAS storage will initialize here.
-
----
-
-## Terminal B — Filesystem Usage
-
-Create ignore rules:
+Example usage:
 
 ```bash
-echo "*.log" > /tmp/mt/.janusignore
-echo "secret.key" >> /tmp/mt/.janusignore
-```
+echo "hello" > /tmp/mt/file.txt
 
-Create a file:
+./janus commit -m "Initial snapshot"
 
-```bash
-echo "Primary Application Logic" > /tmp/mt/main.cpp
-```
-
-Commit a snapshot:
-
-```bash
-./janus commit -m "Initial system state"
-```
-
----
-
-#  Snapshot History
-
-Launch the interactive history viewer:
-
-```bash
 ./janus log
-```
 
-Example:
+./janus diff HASH1 HASH2
 
-```text
-JANUS — Snapshot History
-----------------------------------------------------
-[0] a3f8b9e1c2d3... | Initial system state
-----------------------------------------------------
-
-Enter snapshot number to checkout (or 'q' to quit): 0
+./janus checkout HASH1
 ```
 
 ---
 
-## Manual Operations
+## Future Work
 
-Compare snapshots:
+Planned improvements include:
 
-```bash
-./janus diff <HASH_1> <HASH_2>
-```
-
-Restore a snapshot:
-
-```bash
-./janus checkout <HASH_1>
-```
-
----
-
-#  Filesystem Statistics
-
-View deduplication metrics:
-
-```bash
-./janus stats
-```
-
-Example:
-
-```text
-JANUS — Filesystem Statistics
-----------------------------------------
-Tracked Files      : 14
-Unique CAS Blocks  : 8
-Total Snapshots    : 3
-Logical Size       : 42.15 KiB (43162 bytes)
-Dedup Ratio        : 1.75x (14 files → 8 unique blocks)
-```
-
-For machine-readable output:
-
-```bash
-./janus stats --json
-```
+- Hierarchical directory support
+- Rename and metadata operations
+- Finer-grained locking
+- Incremental block updates
+- Content-defined chunking
+- Safe snapshot-aware garbage collection
+- Background block reclamation
+- Improved testing and benchmarking
+- Compression
+- Larger-scale storage benchmarking
 
 ---
 
-# ⌨ Bash Autocompletion
+## Technologies
 
-Enable for the current shell:
-
-```bash
-source ./janus-completion.bash
-```
-
-Install permanently:
-
-```bash
-echo "source $(pwd)/janus-completion.bash" >> ~/.bashrc
-source ~/.bashrc
-```
+- C++17
+- FUSE3
+- SQLite3
+- OpenSSL
+- CMake
 
 ---
 
-#  Repository Structure
+## Project Status
 
-```text
-janus/
-├── src/
-│   ├── main.cpp            # Command router, interactive TUIs, and FUSE init
-│   ├── JanusFS.cpp         # POSIX-to-C++ FUSE intercept handlers
-│   ├── Database.cpp        # SQLite metadata, GC refcounting, diffing, rollbacks
-│   ├── BlockStore.cpp      # OpenSSL SHA-256 CAS engine (Physical I/O)
-│   ├── BlockChunker.cpp    # Splits data into 4KB deduplication blocks
-│   ├── FileAssembler.cpp   # Reconstructs files dynamically from CAS blocks
-│   ├── Repository.cpp      # Orchestrator binding FS calls to DB/Storage
-│   └── StorageEngine.cpp   # Abstraction for chunking and garbage collection
-├── include/
-├── CMakeLists.txt
-├── janus-completion.bash
-└── README.md
-```
+JANUS is an active experimental storage engine intended for learning and research.
 
----
-
-#  System Teardown
-
-Unmount the filesystem:
-
-```bash
-sudo umount -l /tmp/mt
-```
-
-Remove metadata and CAS storage:
-
-```bash
-rm -rf build/janus_meta.db* build/.janus/
-```
+Its purpose is to explore the interaction between filesystem virtualization, relational metadata storage, and content-addressable persistence rather than to replace production filesystems.
