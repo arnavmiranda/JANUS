@@ -870,8 +870,9 @@ void Database::checkoutSnapshot(BlockStore& cas, const std::string& commit_hash)
 
     {
         auto scanStmt = prepareStatement(
-            "SELECT i.filename, i.size, i.mode, fb.block_hash "
-            "FROM inodes i LEFT JOIN file_blocks fb ON i.id = fb.inode_id");
+            "SELECT i.filename, i.size, i.mode, "
+            "COALESCE((SELECT GROUP_CONCAT(block_hash, ',') FROM file_blocks WHERE inode_id = i.id ORDER BY block_index), 'EMPTY') "
+            "FROM inodes i");
         while (sqlite3_step(scanStmt.get()) == SQLITE_ROW) {
             const char* fn  = reinterpret_cast<const char*>(sqlite3_column_text(scanStmt.get(), 0));
             const char* bh  = reinterpret_cast<const char*>(sqlite3_column_text(scanStmt.get(), 3));
@@ -1022,25 +1023,29 @@ void Database::checkoutSnapshot(BlockStore& cas, const std::string& commit_hash)
             // Only insert block mapping if the row was actually inserted (not already present)
             if (sqlite3_changes(db.get()) > 0 && saved.block_hash != "EMPTY") {
                 sqlite3_int64 inode_id = sqlite3_last_insert_rowid(db.get());
+                std::stringstream blockStream(saved.block_hash);
+                std::string bHash;
+                int bIndex = 0;
 
-                auto insertBlock = prepareStatement(
-                    "INSERT INTO file_blocks (inode_id, block_index, block_hash) VALUES (?, 0, ?)"
-                );
-                sqlite3_bind_int64(insertBlock.get(), 1, inode_id);
-                sqlite3_bind_text(insertBlock.get(), 2, saved.block_hash.c_str(), -1, SQLITE_STATIC);
+                while (std::getline(blockStream, bHash, ',')) {
+                    auto insertBlock = prepareStatement("INSERT INTO file_blocks (inode_id, block_index, block_hash) VALUES (?, ?, ?)");
+                    sqlite3_bind_int64(insertBlock.get(), 1, inode_id);
+                    sqlite3_bind_int(insertBlock.get(), 2, bIndex++);
+                    sqlite3_bind_text(insertBlock.get(), 3, bHash.c_str(), -1, SQLITE_STATIC);
+                    sqlite3_step(insertBlock.get());
 
-                if (sqlite3_step(insertBlock.get()) != SQLITE_DONE) {
-                    const char* err = sqlite3_errmsg(db.get());
-                    throw std::runtime_error(std::string("Failed to restore ignored file blocks: ") + (err ? err : ""));
+                    auto blockData = cas.readBlock(bHash); // Fetch actual chunk size
+                    auto blockStmt = prepareStatement("INSERT INTO blocks (hash, size, refcount) VALUES (?, ?, 1) ON CONFLICT(hash) DO UPDATE SET refcount = refcount + 1");
+                    sqlite3_bind_text(blockStmt.get(), 1, bHash.c_str(), -1, SQLITE_STATIC);
+                    sqlite3_bind_int(blockStmt.get(), 2, static_cast<int>(blockData.size()));
+                    sqlite3_step(blockStmt.get());
                 }
-
-                auto blockStmt = prepareStatement("INSERT OR IGNORE INTO blocks (hash, size, refcount) VALUES (?, ?, 1)");
-                sqlite3_bind_text(blockStmt.get(), 1, saved.block_hash.c_str(), -1, SQLITE_STATIC);
-                sqlite3_bind_int(blockStmt.get(), 2, saved.size);
-                sqlite3_step(blockStmt.get());
             }
         }
         commitTransaction();
+
+        // Clean up unreferenced metadata from the old tree
+        executeQuery("DELETE FROM blocks WHERE refcount = 0;");
         verifyReferenceCounts();
     } catch (...) {
         rollbackTransaction();

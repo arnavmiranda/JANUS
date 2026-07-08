@@ -49,8 +49,13 @@ std::vector<uint8_t> StorageEngine::loadLayout(const FileLayout& layout)
 
 void StorageEngine::deleteOrphans(const std::vector<std::string>& hashes)
 {
-    for (const auto& hash : hashes)
-    {
-        objectStore_.deleteBlock(hash);
-    }
+    // for (const auto& hash : hashes)
+    // {
+    //     objectStore_.deleteBlock(hash);
+    // }
+    // PHYSICAL DELETION DISABLED:
+    // Active garbage collection destroys historical snapshot data 
+    // because refcounts only track the working tree, not historical manifests.
+    // (Requires an asynchronous mark-and-sweep GC traversing all snapshots).
+
 }
