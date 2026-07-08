@@ -708,48 +708,22 @@ std::string Database::commitSnapshot(BlockStore& cas, const std::string& message
 
     try {
         auto stmt = prepareStatement(
-            "SELECT i.id, i.filename, i.size, i.mode FROM inodes i"
+            "SELECT i.filename, i.size, i.mode, "
+            "COALESCE((SELECT GROUP_CONCAT(block_hash, ',') FROM file_blocks WHERE inode_id = i.id ORDER BY block_index), 'EMPTY') "
+            "FROM inodes i"
         );
 
         std::stringstream manifest;
         while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
-            int inodeId =
-                sqlite3_column_int(stmt.get(), 0);
-
-            std::string fname =
-                reinterpret_cast<const char*>(
-                    sqlite3_column_text(stmt.get(), 1));
-
-            int size =
-                sqlite3_column_int(stmt.get(), 2);
-
-            int mode =
-                sqlite3_column_int(stmt.get(), 3);
+            std::string fname = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 0));
+            int size = sqlite3_column_int(stmt.get(), 1);
+            int mode = sqlite3_column_int(stmt.get(), 2);
+            std::string blocks_str = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 3));
 
             if (isIgnored(fname, ignoreList))
                 continue;
 
-            FileLayout layout =
-                getCurrentFileLayout(inodeId);
-
-            //
-            // Temporary safety check.
-            // Snapshot serialization still assumes
-            // one block per file.
-            //
-            if (layout.blocks.size() > 1)
-            {
-                throw std::runtime_error(
-                    "Snapshot of multi-block files "
-                    "is not yet supported.");
-            }
-
-            std::string blockHash =
-                layout.blocks.empty()
-                    ? "EMPTY"
-                    : layout.blocks.front().hash;
-
-            manifest << "FILE|" << fname << "|" << size << "|" << mode << "|" << blockHash << "\n";
+            manifest << "FILE|" << fname << "|" << size << "|" << mode << "|" << blocks_str << "\n";
         }
 
         std::string manifest_str = manifest.str();
@@ -896,9 +870,8 @@ void Database::checkoutSnapshot(BlockStore& cas, const std::string& commit_hash)
 
     {
         auto scanStmt = prepareStatement(
-            "INSERT OR IGNORE INTO blocks "
-            "(hash, size, refcount) "
-            "VALUES (?, ?, 1)");
+            "SELECT i.filename, i.size, i.mode, fb.block_hash "
+            "FROM inodes i LEFT JOIN file_blocks fb ON i.id = fb.inode_id");
         while (sqlite3_step(scanStmt.get()) == SQLITE_ROW) {
             const char* fn  = reinterpret_cast<const char*>(sqlite3_column_text(scanStmt.get(), 0));
             const char* bh  = reinterpret_cast<const char*>(sqlite3_column_text(scanStmt.get(), 3));
@@ -919,6 +892,7 @@ void Database::checkoutSnapshot(BlockStore& cas, const std::string& commit_hash)
     try {
         executeQuery("DELETE FROM file_blocks;");
         executeQuery("DELETE FROM inodes;");
+        executeQuery("UPDATE blocks SET refcount = 0;");
 
         // Restore snapshot manifest entries
         std::istringstream iss(manifest);
@@ -940,7 +914,8 @@ void Database::checkoutSnapshot(BlockStore& cas, const std::string& commit_hash)
             std::string filename   = tokens[1];
             int         size       = std::stoi(tokens[2]);
             int         mode       = std::stoi(tokens[3]);
-            std::string block_hash = tokens[4];
+
+            std::string blocks     = tokens[4];
 
             auto insertInode = prepareStatement(
                 "INSERT INTO inodes (filename, mode, size, mtime) VALUES (?, ?, ?, strftime('%s','now'))"
@@ -956,27 +931,76 @@ void Database::checkoutSnapshot(BlockStore& cas, const std::string& commit_hash)
 
             sqlite3_int64 inode_id = sqlite3_last_insert_rowid(db.get());
 
-            if (block_hash != "EMPTY") {
-                auto insertBlock = prepareStatement(
-                    "INSERT INTO file_blocks (inode_id, block_index, block_hash) VALUES (?, 0, ?)"
-                );
-                sqlite3_bind_int64(insertBlock.get(), 1, inode_id);
-                sqlite3_bind_text(insertBlock.get(), 2, block_hash.c_str(), -1, SQLITE_STATIC);
+            if (blocks != "EMPTY")
+            {
+                std::stringstream blockStream(blocks);
+                std::string blockHash;
+                int blockIndex = 0;
 
-                if (sqlite3_step(insertBlock.get()) != SQLITE_DONE) {
-                    const char* err = sqlite3_errmsg(db.get());
-                    throw std::runtime_error(std::string("Failed to insert file block mapping: ") + (err ? err : ""));
+                while (std::getline(blockStream, blockHash, ','))
+                {
+                    auto insertBlock = prepareStatement(
+                        "INSERT INTO file_blocks "
+                        "(inode_id, block_index, block_hash) "
+                        "VALUES (?, ?, ?)");
+
+                    sqlite3_bind_int64(
+                        insertBlock.get(),
+                        1,
+                        inode_id);
+
+                    sqlite3_bind_int(
+                        insertBlock.get(),
+                        2,
+                        blockIndex++);
+
+                    sqlite3_bind_text(
+                        insertBlock.get(),
+                        3,
+                        blockHash.c_str(),
+                        -1,
+                        SQLITE_STATIC);
+
+                    if (sqlite3_step(insertBlock.get()) != SQLITE_DONE)
+                    {
+                        throw std::runtime_error(
+                            std::string("Failed to insert file block mapping: ") +
+                            sqlite3_errmsg(db.get()));
+                    }
+
+                    //
+                    // Rebuild the block metadata.
+                    // We don't know the exact block size from the manifest,
+                    // so read the block from the CAS.
+                    //
+                    auto blockData =
+                        cas.readBlock(blockHash);
+
+                    auto blockStmt = prepareStatement(
+                        "INSERT INTO blocks (hash, size, refcount) "
+                        "VALUES (?, ?, 1) "
+                        "ON CONFLICT(hash) DO UPDATE "
+                        "SET refcount = refcount + 1");
+
+                    sqlite3_bind_text(
+                        blockStmt.get(),
+                        1,
+                        blockHash.c_str(),
+                        -1,
+                        SQLITE_STATIC);
+
+                    sqlite3_bind_int(
+                        blockStmt.get(),
+                        2,
+                        static_cast<int>(blockData.size()));
+
+                    if (sqlite3_step(blockStmt.get()) != SQLITE_DONE)
+                    {
+                        throw std::runtime_error(
+                            std::string("Failed to rebuild block metadata: ") +
+                            sqlite3_errmsg(db.get()));
+                    }
                 }
-
-                auto blockStmt = prepareStatement(
-                    "SELECT block_hash "
-                    "FROM file_blocks "
-                    "WHERE inode_id = ? "
-                    "ORDER BY block_index");
-
-                sqlite3_bind_text(blockStmt.get(), 1, block_hash.c_str(), -1, SQLITE_STATIC);
-                sqlite3_bind_int(blockStmt.get(), 2, size);
-                sqlite3_step(blockStmt.get());
             }
         }
 

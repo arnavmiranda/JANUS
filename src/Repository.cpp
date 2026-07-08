@@ -14,7 +14,6 @@ void Repository::write(
     size_t size,
     off_t offset)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
     
     metadata_.beginTransaction();
 
@@ -70,7 +69,6 @@ void Repository::write(
 std::vector<uint8_t> Repository::read(
     const std::string& filename)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
     const int inodeId =
         metadata_.getInodeId(filename);
 
@@ -82,8 +80,7 @@ std::vector<uint8_t> Repository::read(
 void Repository::unlink(
     const std::string& filename)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
+
     metadata_.beginTransaction();
 
     try
@@ -117,7 +114,6 @@ void Repository::truncate(
     const std::string& filename,
     size_t newSize)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
 
     metadata_.beginTransaction();
 

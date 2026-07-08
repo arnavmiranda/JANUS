@@ -9,6 +9,8 @@ JanusFS::JanusFS(Repository& repository) : repository(repository) {}
 JanusFS::~JanusFS() {}
 
 int JanusFS::getattr(const char* path, struct stat* stbuf, struct fuse_file_info* fi) {
+    std::lock_guard<std::mutex> lock(vfs_lock);
+
     (void) fi;
     memset(stbuf, 0, sizeof(struct stat));
 
@@ -45,6 +47,8 @@ int JanusFS::getattr(const char* path, struct stat* stbuf, struct fuse_file_info
 }
 
 int JanusFS::readdir(const char* path, void* buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info* fi, enum fuse_readdir_flags flags) {
+    std::lock_guard<std::mutex> lock(vfs_lock);
+
     (void) offset;
     (void) fi;
     (void) flags;
@@ -76,6 +80,8 @@ int JanusFS::readdir(const char* path, void* buf, fuse_fill_dir_t filler, off_t 
 }
 
 int JanusFS::create(const char* path, mode_t mode, struct fuse_file_info* fi) {
+    std::lock_guard<std::mutex> lock(vfs_lock);
+
     (void) fi;
 
     try {
@@ -108,6 +114,8 @@ int JanusFS::create(const char* path, mode_t mode, struct fuse_file_info* fi) {
 
 int JanusFS::write(const char* path, const char* buf, size_t size, off_t offset, struct fuse_file_info* fi)
 {
+    std::lock_guard<std::mutex> lock(vfs_lock);
+
     (void)fi;
 
 
@@ -145,6 +153,8 @@ int JanusFS::write(const char* path, const char* buf, size_t size, off_t offset,
 }
 int JanusFS::read(const char* path, char* buf, size_t size, off_t offset, struct fuse_file_info* fi)
 {
+    std::lock_guard<std::mutex> lock(vfs_lock);
+
     (void)fi;
 
 
@@ -194,6 +204,7 @@ int JanusFS::read(const char* path, char* buf, size_t size, off_t offset, struct
 
 int JanusFS::unlink(const char* path)
 {
+    std::lock_guard<std::mutex> lock(vfs_lock);
 
     try
     {
@@ -226,6 +237,8 @@ int JanusFS::unlink(const char* path)
 }
 int JanusFS::truncate(const char *path, off_t size, struct fuse_file_info *fi)
 {
+    std::lock_guard<std::mutex> lock(vfs_lock);
+
     (void) fi;
 
 

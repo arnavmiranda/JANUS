@@ -29,6 +29,7 @@ public:
 
 private:
     Repository& repository;
+    std::mutex vfs_lock;
 };
 
 #endif // JANUSFS_H

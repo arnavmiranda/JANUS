@@ -68,5 +68,4 @@ private:
     BlockStore objectStore_;
     StorageEngine storage_;
 
-    std::mutex mutex_;
 };
