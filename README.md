@@ -8,7 +8,7 @@ Unlike traditional filesystems, JANUS features intrinsic **4KB block-level data 
 
 ---
 
-# 🚀 Key Capabilities
+#  Key Capabilities
 
 ### Block-Level Deduplication
 
@@ -54,7 +54,7 @@ Built-in terminal interfaces provide:
 
 ---
 
-# 🧠 System Architecture
+#  System Architecture
 
 JANUS consists of three primary subsystems.
 
@@ -128,7 +128,7 @@ During reads:
 
 ---
 
-# ⏱️ Version Control Mechanics
+#  Version Control Mechanics
 
 Version control is implemented directly inside the filesystem.
 
@@ -169,7 +169,7 @@ Two snapshot manifests are compared to identify:
 
 ---
 
-# 🛠️ Prerequisites
+#  Prerequisites
 
 ## Dependencies
 
@@ -198,7 +198,7 @@ make
 
 ---
 
-# 🕹️ Operational Lifecycle
+#  Operational Lifecycle
 
 JANUS requires two terminal sessions.
 
@@ -238,7 +238,7 @@ Commit a snapshot:
 
 ---
 
-# 📜 Snapshot History
+#  Snapshot History
 
 Launch the interactive history viewer:
 
@@ -275,7 +275,7 @@ Restore a snapshot:
 
 ---
 
-# 📊 Filesystem Statistics
+#  Filesystem Statistics
 
 View deduplication metrics:
 
@@ -303,7 +303,7 @@ For machine-readable output:
 
 ---
 
-# ⌨️ Bash Autocompletion
+# ⌨ Bash Autocompletion
 
 Enable for the current shell:
 
@@ -320,7 +320,7 @@ source ~/.bashrc
 
 ---
 
-# 📂 Repository Structure
+#  Repository Structure
 
 ```text
 janus/
@@ -341,7 +341,7 @@ janus/
 
 ---
 
-# 🧹 System Teardown
+#  System Teardown
 
 Unmount the filesystem:
 
