@@ -18,9 +18,10 @@ int JanusFS::getattr(const char* path, struct stat* stbuf, struct fuse_file_info
         return 0;
     }
 
-    std::string filename = path + 1; // Strip leading slash
 
     try {
+        std::string filename = path + 1; // Strip leading slash
+    
         auto stmt = repository.prepareStatement("SELECT mode, size, mtime FROM inodes WHERE filename = ?");
         sqlite3_bind_text(stmt.get(), 1, filename.c_str(), -1, SQLITE_STATIC);
 
@@ -76,9 +77,10 @@ int JanusFS::readdir(const char* path, void* buf, fuse_fill_dir_t filler, off_t 
 
 int JanusFS::create(const char* path, mode_t mode, struct fuse_file_info* fi) {
     (void) fi;
-    std::string filename = path + 1;
 
     try {
+        std::string filename = path + 1;
+
         repository.beginTransaction();
         auto stmt = repository.prepareStatement("INSERT INTO inodes (filename, mode, size, mtime) VALUES (?, ?, 0, strftime('%s','now'))");
         sqlite3_bind_text(stmt.get(), 1, filename.c_str(), -1, SQLITE_STATIC);
@@ -108,10 +110,11 @@ int JanusFS::write(const char* path, const char* buf, size_t size, off_t offset,
 {
     (void)fi;
 
-    std::string filename = path + 1;
 
     try
     {
+        std::string filename = path + 1;
+    
         repository.write(
             filename,
             buf,
@@ -144,10 +147,11 @@ int JanusFS::read(const char* path, char* buf, size_t size, off_t offset, struct
 {
     (void)fi;
 
-    std::string filename = path + 1;
 
     try
     {
+        std::string filename = path + 1;
+
         auto data = repository.read(filename);
 
         if (offset >= static_cast<off_t>(data.size()))
@@ -190,10 +194,11 @@ int JanusFS::read(const char* path, char* buf, size_t size, off_t offset, struct
 
 int JanusFS::unlink(const char* path)
 {
-    std::string filename = path + 1;
 
     try
     {
+        std::string filename = path + 1;
+    
         repository.unlink(filename);
 
         return 0;
@@ -223,10 +228,11 @@ int JanusFS::truncate(const char *path, off_t size, struct fuse_file_info *fi)
 {
     (void) fi;
 
-    std::string filename = path + 1;
 
     try
     {
+        std::string filename = path + 1;
+
         repository.truncate(filename, static_cast<size_t>(size));
         return 0;
     }

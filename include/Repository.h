@@ -4,6 +4,7 @@
 #include "StorageEngine.h"
 
 #include <string>
+#include <mutex>
 
 class Repository
 {
@@ -66,4 +67,6 @@ private:
     Database metadata_;
     BlockStore objectStore_;
     StorageEngine storage_;
+
+    std::mutex mutex_;
 };

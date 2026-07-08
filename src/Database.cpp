@@ -633,26 +633,39 @@ std::vector<std::string> Database::getIgnoreList(BlockStore& cas) {
     auto inodeStmt = prepareStatement(
         "SELECT i.id FROM inodes i WHERE i.filename = '.janusignore'"
     );
-    if (sqlite3_step(inodeStmt.get()) != SQLITE_ROW) {
-        return rules;  // no .janusignore present — nothing to ignore
-    }
+    
     sqlite3_int64 inode_id = sqlite3_column_int64(inodeStmt.get(), 0);
 
     // 2. Get the block_hash for that inode
     auto blockStmt = prepareStatement(
-        "SELECT block_hash FROM file_blocks WHERE inode_id = ? LIMIT 1"
-    );
+        "SELECT block_hash "
+        "FROM file_blocks "
+        "WHERE inode_id = ? "
+        "ORDER BY block_index");
+
     sqlite3_bind_int64(blockStmt.get(), 1, inode_id);
     if (sqlite3_step(blockStmt.get()) != SQLITE_ROW) {
         return rules;  // inode exists but has no data block
     }
-    const char* raw_hash = reinterpret_cast<const char*>(sqlite3_column_text(blockStmt.get(), 0));
-    if (!raw_hash) return rules;
-    std::string block_hash(raw_hash);
 
-    // 3. Read the block and split by newlines into rules
-    std::vector<uint8_t> data = cas.readBlock(block_hash);
-    std::string content(data.begin(), data.end());
+    std::string content;
+
+    while (sqlite3_step(blockStmt.get()) == SQLITE_ROW)
+    {
+        const char* rawHash =
+            reinterpret_cast<const char*>(
+                sqlite3_column_text(blockStmt.get(), 0));
+
+        if (!rawHash)
+            continue;
+
+        auto block =
+            cas.readBlock(rawHash);
+
+        content.append(
+            block.begin(),
+            block.end());
+    }
 
     std::istringstream iss(content);
     std::string line;
@@ -695,26 +708,48 @@ std::string Database::commitSnapshot(BlockStore& cas, const std::string& message
 
     try {
         auto stmt = prepareStatement(
-            "SELECT i.filename, i.size, i.mode, fb.block_hash "
-            "FROM inodes i LEFT JOIN file_blocks fb ON i.id = fb.inode_id"
+            "SELECT i.id, i.filename, i.size, i.mode FROM inodes i"
         );
 
         std::stringstream manifest;
         while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
-            const char* filename = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 0));
-            int size = sqlite3_column_int(stmt.get(), 1);
-            int mode = sqlite3_column_int(stmt.get(), 2);
-            const char* block_hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 3));
+            int inodeId =
+                sqlite3_column_int(stmt.get(), 0);
 
-            std::string fname = filename ? filename : "";
+            std::string fname =
+                reinterpret_cast<const char*>(
+                    sqlite3_column_text(stmt.get(), 1));
 
-            // Skip files that match a .janusignore rule
-            if (isIgnored(fname, ignoreList)) continue;
+            int size =
+                sqlite3_column_int(stmt.get(), 2);
 
-            std::string block_hash_str = block_hash ? block_hash : "EMPTY";
+            int mode =
+                sqlite3_column_int(stmt.get(), 3);
 
-            manifest << "FILE|" << fname << "|"
-                     << size << "|" << mode << "|" << block_hash_str << "\n";
+            if (isIgnored(fname, ignoreList))
+                continue;
+
+            FileLayout layout =
+                getCurrentFileLayout(inodeId);
+
+            //
+            // Temporary safety check.
+            // Snapshot serialization still assumes
+            // one block per file.
+            //
+            if (layout.blocks.size() > 1)
+            {
+                throw std::runtime_error(
+                    "Snapshot of multi-block files "
+                    "is not yet supported.");
+            }
+
+            std::string blockHash =
+                layout.blocks.empty()
+                    ? "EMPTY"
+                    : layout.blocks.front().hash;
+
+            manifest << "FILE|" << fname << "|" << size << "|" << mode << "|" << blockHash << "\n";
         }
 
         std::string manifest_str = manifest.str();
@@ -861,9 +896,9 @@ void Database::checkoutSnapshot(BlockStore& cas, const std::string& commit_hash)
 
     {
         auto scanStmt = prepareStatement(
-            "SELECT i.filename, i.size, i.mode, fb.block_hash "
-            "FROM inodes i LEFT JOIN file_blocks fb ON i.id = fb.inode_id"
-        );
+            "INSERT OR IGNORE INTO blocks "
+            "(hash, size, refcount) "
+            "VALUES (?, ?, 1)");
         while (sqlite3_step(scanStmt.get()) == SQLITE_ROW) {
             const char* fn  = reinterpret_cast<const char*>(sqlite3_column_text(scanStmt.get(), 0));
             const char* bh  = reinterpret_cast<const char*>(sqlite3_column_text(scanStmt.get(), 3));
@@ -933,7 +968,12 @@ void Database::checkoutSnapshot(BlockStore& cas, const std::string& commit_hash)
                     throw std::runtime_error(std::string("Failed to insert file block mapping: ") + (err ? err : ""));
                 }
 
-                auto blockStmt = prepareStatement("INSERT OR IGNORE INTO blocks (hash, size, refcount) VALUES (?, ?, 1)");
+                auto blockStmt = prepareStatement(
+                    "SELECT block_hash "
+                    "FROM file_blocks "
+                    "WHERE inode_id = ? "
+                    "ORDER BY block_index");
+
                 sqlite3_bind_text(blockStmt.get(), 1, block_hash.c_str(), -1, SQLITE_STATIC);
                 sqlite3_bind_int(blockStmt.get(), 2, size);
                 sqlite3_step(blockStmt.get());
