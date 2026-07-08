@@ -40,13 +40,23 @@ void Repository::write(
             buffer + size,
             data.begin() + offset);
 
-        FileLayout newLayout =
-            storage_.createLayout(data);
+        
+        try {
+            FileLayout newLayout =
+                storage_.createLayout(data);
 
-        metadata_.commitLayout(
-            inodeId,
-            newLayout,
-            objectStore_);
+            auto orphanBlocks =
+                metadata_.commitLayout(
+                    inodeId,
+                    newLayout);
+
+            metadata_.commitTransaction();
+
+            storage_.deleteOrphans(orphanBlocks);
+        } catch (...) {
+            //metadata has already been commited
+            //orphan cleanup can be retried later
+        }
     }
     catch (...)
     {
@@ -66,13 +76,36 @@ std::vector<uint8_t> Repository::read(
 
     return storage_.loadLayout(layout);
 }
-
 void Repository::unlink(
     const std::string& filename)
 {
-    metadata_.unlinkFile(
-        filename,
-        objectStore_);
+    metadata_.beginTransaction();
+
+    try
+    {
+        int inodeId =
+            metadata_.getInodeId(filename);
+
+        auto orphanBlocks =
+            metadata_.unlinkLayout(inodeId);
+
+        metadata_.commitTransaction();
+
+        try
+        {
+            storage_.deleteOrphans(orphanBlocks);
+        }
+        catch (...)
+        {
+            // Metadata is already committed.
+            // Orphan cleanup is best-effort.
+        }
+    }
+    catch (...)
+    {
+        metadata_.rollbackTransaction();
+        throw;
+    }
 }
 
 void Repository::truncate(
@@ -97,10 +130,22 @@ void Repository::truncate(
         FileLayout newLayout =
             storage_.createLayout(data);
 
-        metadata_.commitLayout(
-            inodeId,
-            newLayout,
-            objectStore_);
+        auto orphanBlocks =
+            metadata_.commitLayout(
+                inodeId,
+                newLayout);
+
+        metadata_.commitTransaction();
+
+        try
+        {
+            storage_.deleteOrphans(orphanBlocks);
+        }
+        catch (...)
+        {
+            // Metadata is already committed.
+            // Orphan cleanup can happen later.
+        }
     }
     catch (...)
     {

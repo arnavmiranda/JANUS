@@ -171,15 +171,12 @@ FileLayout Database::getCurrentFileLayout(int inodeId)
         }
 
         layout.logicalSize =
-            static_cast<size_t>(
+            static_cast<uint64_t>(
                 sqlite3_column_int64(stmt.get(), 0));
     }
     {
         auto stmt = prepareStatement(
-            "SELECT block_hash "
-            "FROM file_blocks "
-            "WHERE inode_id = ? "
-            "ORDER BY block_index");
+            "SELECT fb.block_hash, b.size FROM file_blocks fb JOIN blocks b ON fb.block_hash = b.hash WHERE fb.inode_id = ? ORDER BY fb.block_index");
 
         sqlite3_bind_int(stmt.get(), 1, inodeId);
 
@@ -196,10 +193,17 @@ FileLayout Database::getCurrentFileLayout(int inodeId)
                     "Failed to lookup block mappings: " +
                     std::string(sqlite3_errmsg(db.get())));
             }
+            LayoutBlock block;
 
-            layout.blockHashes.emplace_back(
+            block.hash =
                 reinterpret_cast<const char*>(
-                    sqlite3_column_text(stmt.get(), 0)));
+                    sqlite3_column_text(stmt.get(), 0));
+
+            block.size =
+                static_cast<uint32_t>(
+                    sqlite3_column_int(stmt.get(), 1));
+
+            layout.blocks.push_back(std::move(block));
         }
     }
 
@@ -253,8 +257,7 @@ void Database::replaceFileMappings(
     }
 
     // Insert replacement mappings.
-    for (size_t i = 0; i < layout.blockHashes.size(); ++i)
-    {
+    for (size_t i = 0; i < layout.blocks.size(); ++i)    {
         auto stmt = prepareStatement(
             "INSERT INTO file_blocks "
             "(inode_id, block_index, block_hash) "
@@ -266,7 +269,7 @@ void Database::replaceFileMappings(
         sqlite3_bind_text(
             stmt.get(),
             3,
-            layout.blockHashes[i].c_str(),
+            layout.blocks[i].hash.c_str(),
             -1,
             SQLITE_STATIC);
 
@@ -278,39 +281,38 @@ void Database::replaceFileMappings(
         }
     }
 }
-void Database::commitLayout(int inodeId, const FileLayout& newLayout, BlockStore& cas)
+std::vector<std::string> Database::commitLayout(
+    int inodeId,
+    const FileLayout& newLayout)
 {
-    const auto oldLayout = getCurrentFileLayout(inodeId);
+    const auto oldLayout =
+        getCurrentFileLayout(inodeId);
 
-    //
-    // Temporary: Database still needs block sizes.
-    // This will disappear once StorageEngine returns
-    // richer layout metadata.
-    //
-    for (const auto& hash : newLayout.blockHashes)
+    for (const auto& block : newLayout.blocks)
     {
-        auto block = cas.readBlock(hash);
-
         insertBlockMetadata(
-            hash,
-            block.size());
+            block.hash,
+            block.size);
 
-        incrementRefcount(hash);
+        incrementRefcount(
+            block.hash);
     }
 
-    // Update inode → block mappings.
     replaceFileMappings(
         inodeId,
         newLayout);
 
-    std::vector<std::string> blocksToDelete;
+    std::vector<std::string> orphanBlocks;
 
-    for (const auto& hash : oldLayout.blockHashes)
+    for (const auto& block : oldLayout.blocks)
     {
-        if (decrementRefcount(hash))
+        if (decrementRefcount(block.hash))
         {
-            deleteBlockMetadata(hash);
-            blocksToDelete.push_back(hash);
+            deleteBlockMetadata(
+                block.hash);
+
+            orphanBlocks.push_back(
+                block.hash);
         }
     }
 
@@ -318,150 +320,70 @@ void Database::commitLayout(int inodeId, const FileLayout& newLayout, BlockStore
         inodeId,
         newLayout.logicalSize);
 
-    commitTransaction();
+#ifndef NDEBUG
+    verifyReferenceCounts();
+#endif
+
+    return orphanBlocks;
+}
+std::vector<std::string> Database::unlinkLayout(
+    int inodeId)
+{
+    auto oldLayout =
+        getCurrentFileLayout(inodeId);
+
+    {
+        auto stmt = prepareStatement(
+            "DELETE FROM file_blocks "
+            "WHERE inode_id = ?");
+
+        sqlite3_bind_int(
+            stmt.get(),
+            1,
+            inodeId);
+
+        if (sqlite3_step(stmt.get()) != SQLITE_DONE)
+        {
+            throw std::runtime_error(
+                "Failed to delete file mappings.");
+        }
+    }
+
+    {
+        auto stmt = prepareStatement(
+            "DELETE FROM inodes "
+            "WHERE id = ?");
+
+        sqlite3_bind_int(
+            stmt.get(),
+            1,
+            inodeId);
+
+        if (sqlite3_step(stmt.get()) != SQLITE_DONE)
+        {
+            throw std::runtime_error(
+                "Failed to delete inode.");
+        }
+    }
+
+    std::vector<std::string> orphanBlocks;
+
+    for (const auto& block : oldLayout.blocks)
+    {
+        if (decrementRefcount(block.hash))
+        {
+            deleteBlockMetadata(block.hash);
+
+            orphanBlocks.push_back(block.hash);
+        }
+    }
 
 #ifndef NDEBUG
     verifyReferenceCounts();
 #endif
 
-    for (const auto& hash : blocksToDelete)
-    {
-        cas.deleteBlock(hash);
-    }
+    return orphanBlocks;
 }
-
-// void Database::writeFile(const std::string& filename, const char* buffer, size_t size, off_t offset, BlockStore& cas)
-// {
-//     beginTransaction();
-
-//     try
-//     {
-//         int inodeId = getInodeId(filename);
-
-//         std::vector<uint8_t> data = loadLayout(inodeId, cas);
-
-//         size_t requiredSize = static_cast<size_t>(offset) + size;
-
-//         if (data.size() < requiredSize)
-//         {
-//             data.resize(requiredSize, 0);
-//         }
-
-//         std::copy(buffer, buffer + size, data.begin() + offset);
-
-//         commitFileContents(inodeId, data, cas);
-//     }
-//     catch (...)
-//     {
-//         rollbackTransaction();
-//         throw;
-//     }
-// }
-
-// std::vector<uint8_t> Database::readFile(
-//     const std::string& filename,
-//     BlockStore& cas)
-// {
-//     int inodeId = getInodeId(filename);
-
-//     return loadLayout(
-//         inodeId,
-//         cas);
-// }
-
-
-void Database::unlinkFile(
-    const std::string& filename,
-    BlockStore& cas)
-{
-    beginTransaction();
-
-    std::vector<std::string> blocksToDelete;
-
-    try
-    {
-        int inodeId = getInodeId(filename);
-
-        //
-        // Remember which blocks this file owns.
-        //
-        auto oldLayout =
-            getCurrentFileLayout(inodeId);
-
-        //
-        // Remove mappings.
-        //
-        {
-            auto stmt = prepareStatement(
-                "DELETE FROM file_blocks "
-                "WHERE inode_id = ?");
-
-            sqlite3_bind_int(
-                stmt.get(),
-                1,
-                inodeId);
-
-            if (sqlite3_step(stmt.get()) != SQLITE_DONE)
-            {
-                throw std::runtime_error(
-                    "Failed to delete file mappings.");
-            }
-        }
-
-        //
-        // Remove inode.
-        //
-        {
-            auto stmt = prepareStatement(
-                "DELETE FROM inodes "
-                "WHERE id = ?");
-
-            sqlite3_bind_int(
-                stmt.get(),
-                1,
-                inodeId);
-
-            if (sqlite3_step(stmt.get()) != SQLITE_DONE)
-            {
-                throw std::runtime_error(
-                    "Failed to delete inode.");
-            }
-        }
-
-        //
-        // Release ownership.
-        //
-        for (const auto& hash : oldLayout.blockHashes)
-        {
-            if (decrementRefcount(hash))
-            {
-                deleteBlockMetadata(hash);
-
-                blocksToDelete.push_back(hash);
-            }
-        }
-
-        commitTransaction();
-
-#ifndef NDEBUG
-        verifyReferenceCounts();
-#endif
-
-        //
-        // Physical cleanup happens AFTER commit.
-        //
-        for (const auto& hash : blocksToDelete)
-        {
-            cas.deleteBlock(hash);
-        }
-    }
-    catch (...)
-    {
-        rollbackTransaction();
-        throw;
-    }
-}
-
 void Database::insertBlockMetadata(
     const std::string& hash,
     size_t blockSize)

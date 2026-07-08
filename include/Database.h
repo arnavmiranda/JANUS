@@ -51,18 +51,10 @@ public:
     std::vector<std::pair<std::string, std::string>> getSnapshotHistory();
     void printStats(bool asJson);
 
-    // void truncateFile(const std::string &filename, size_t newSize, BlockStore &cas);
-    
-    // internal consistency verifier that validates the integirty of the cas metadata after every ownership transition
-    // this is public so that we can later call this with writeFile, unlinkFile, checkout, tests, etc
     void verifyReferenceCounts();
 
-    // // File operations (storage engine API)
-    // void writeFile(const std::string &filename, const char *buffer, size_t size, off_t offset, BlockStore &cas);
 
-    // std::vector<uint8_t> readFile(const std::string &filename, BlockStore &cas);
-
-    void unlinkFile(const std::string &filename, BlockStore &cas);
+    std::vector<std::string> unlinkLayout(int inodeId);
 
     //metadata
     int getInodeId(const std::string& filename);
@@ -73,15 +65,10 @@ public:
 
     void updateInodeMetadata(int inodeId, size_t newSize);
 
-    void Database::commitLayout(int inodeId, const FileLayout& newLayout, BlockStore& cas);
+    std::vector<std::string> commitLayout(int inodeId, const FileLayout& newLayout);
 
 private:
     DatabasePtr db;
-
-    std::vector<uint8_t> loadLayout(
-        int inodeId,
-        BlockStore& cas);
-
 
     //refcounting
     void insertBlockMetadata(

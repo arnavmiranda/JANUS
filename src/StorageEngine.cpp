@@ -8,46 +8,6 @@ StorageEngine::StorageEngine(BlockStore& objectStore)
 {
 }
 
-FileLayout StorageEngine::store(const std::vector<uint8_t>& bytes)
-{
-    FileLayout layout;
-
-    layout.logicalSize = bytes.size();
-
-    auto blocks =
-        BlockChunker::split(bytes);
-
-    for (const auto& block : blocks)
-    {
-        layout.blockHashes.push_back(
-            objectStore_.writeBlock(
-                block.bytes));
-    }
-
-    return layout;
-}
-
-std::vector<uint8_t> StorageEngine::load(const FileLayout& layout)
-{
-    std::vector<FileBlock> blocks;
-
-    blocks.reserve(layout.blockHashes.size());
-
-    for (const auto& hash : layout.blockHashes)
-    {
-        FileBlock block;
-
-        block.bytes =
-            objectStore_.readBlock(hash);
-
-        blocks.push_back(
-            std::move(block));
-    }
-
-    return FileAssembler::assemble(
-        blocks,
-        layout.logicalSize);
-}
 
 FileLayout StorageEngine::createLayout(const std::vector<uint8_t>& bytes)
 {
@@ -56,9 +16,16 @@ FileLayout StorageEngine::createLayout(const std::vector<uint8_t>& bytes)
 
     auto blocks = BlockChunker::split(bytes);
 
+    layout.blocks.reserve(blocks.size());
+
     for (const auto& block : blocks)
     {
-        layout.blockHashes.push_back( objectStore_.writeBlock(block.bytes));
+        LayoutBlock layoutBlock;
+
+        layoutBlock.hash = objectStore_.writeBlock(block.bytes);
+        layoutBlock.size = static_cast<uint32_t>(block.bytes.size());
+
+        layout.blocks.push_back(std::move(layoutBlock));
     }
 
     return layout;
@@ -67,21 +34,23 @@ FileLayout StorageEngine::createLayout(const std::vector<uint8_t>& bytes)
 std::vector<uint8_t> StorageEngine::loadLayout(const FileLayout& layout)
 {
     std::vector<FileBlock> blocks;
+    blocks.reserve(layout.blocks.size());
 
-    blocks.reserve(layout.blockHashes.size());
-
-    for (const auto& hash : layout.blockHashes)
+    for (const auto& layoutBlock : layout.blocks)
     {
         FileBlock block;
+        block.bytes = objectStore_.readBlock(layoutBlock.hash);
 
-        block.bytes =
-            objectStore_.readBlock(hash);
-
-        blocks.push_back(
-            std::move(block));
+        blocks.push_back(std::move(block));
     }
 
-    return FileAssembler::assemble(
-        blocks,
-        layout.logicalSize);
+    return FileAssembler::assemble(blocks, layout.logicalSize);
+}
+
+void StorageEngine::deleteOrphans(const std::vector<std::string>& hashes)
+{
+    for (const auto& hash : hashes)
+    {
+        objectStore_.deleteBlock(hash);
+    }
 }
